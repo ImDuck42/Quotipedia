@@ -2,9 +2,10 @@
   {
     "id": "mmwregzf-6j2o2q1u034v",
     "username": "ImDuck42",
-    "passwordHash": "714682fc3b6ec2b130e72fa224319e99c98026eee965d26339209ea7a3ddcff1",
+    "passwordHash": "609f54f33ecf18045763115d36448911:38b688ff49d76f410744aadf31590e64e786aa96c6f53f3555519430e12fa57e",
     "createdAt": "2026-03-19T00:56:03.967Z",
-    "role": "admin"
+    "role": "admin",
+    "updatedAt": "2026-03-19T15:25:09.752Z"
   },
   {
     "id": "mmx30k4k-1q0q0w2i2w6s",
