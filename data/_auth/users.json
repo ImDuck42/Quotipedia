@@ -1,0 +1,72 @@
+[
+  {
+    "id": "mmwregzf-6j2o2q1u034v",
+    "username": "ImDuck42",
+    "passwordHash": "714682fc3b6ec2b130e72fa224319e99c98026eee965d26339209ea7a3ddcff1",
+    "createdAt": "2026-03-19T00:56:03.967Z",
+    "role": "admin"
+  },
+  {
+    "id": "mmx30k4k-1q0q0w2i2w6s",
+    "username": "bob",
+    "passwordHash": "5f7780c866a596e4ddc6819655bb635b180ec30e5574456977b7503c3c2a007c",
+    "createdAt": "2026-03-19T06:21:10.260Z",
+    "role": "user"
+  },
+  {
+    "id": "mmx3qfh3-0b2v674l4v6j",
+    "username": "julian",
+    "passwordHash": "1278bb87e922168ee9112ccf49991b1b3858122bf5c0f1a819badbebb93a301d",
+    "createdAt": "2026-03-19T06:41:17.275Z",
+    "role": "user"
+  },
+  {
+    "id": "mmx4set2-3c0q2s1e192e",
+    "username": "Nyx",
+    "passwordHash": "be58c1d84651ebca7178d62e02565ce633c99b3380bb4cdb51eb28f3b43a0b25",
+    "createdAt": "2026-03-19T07:10:49.336Z",
+    "role": "user"
+  },
+  {
+    "id": "mmx64r50-0u5v4n4n0x3d",
+    "username": "Marcus-Aurelius",
+    "passwordHash": "cbc63e00cd0b4a4b6f747f16fb56b4ecf293d2314facd536712a1f12b3b34210",
+    "createdAt": "2026-03-19T07:48:24.832Z",
+    "role": "user"
+  },
+  {
+    "id": "mmx6770g-3j6l4n442v4w",
+    "username": "kleinesbischenCoca",
+    "passwordHash": "b438ce769b8b232449dcf4b1bd65318f9e11b8552596dcd4640d04dd53a77523",
+    "createdAt": "2026-03-19T07:50:18.693Z",
+    "role": "user"
+  },
+  {
+    "id": "mmx6e433-5p4v0z44283s",
+    "username": "Siska",
+    "passwordHash": "df19721fcc7430e08af5b45b492800312cb5fb640cc57c935b86583afcf652d2",
+    "createdAt": "2026-03-19T07:55:41.489Z",
+    "role": "user"
+  },
+  {
+    "id": "mmx6gpr8-4l710u5f096g",
+    "username": "Nico",
+    "passwordHash": "23cc64ef8406b0bc570410d19323c78c5f07917bb2959baa3a1892e2fe7ab2ef",
+    "createdAt": "2026-03-19T07:57:42.915Z",
+    "role": "user"
+  },
+  {
+    "id": "mmx6k7gs-1n1f3v4k2l28",
+    "username": "Moebius",
+    "passwordHash": "2fb9c35a68be98fd39fb442435bf8a4c733d3d89f1df503af7dd24d62b3ed57a",
+    "createdAt": "2026-03-19T08:00:25.828Z",
+    "role": "user"
+  },
+  {
+    "id": "mmx7j5bp-6l0q4x110o56",
+    "username": "Steven",
+    "passwordHash": "6d86754f2083fd7d1571079a62b7742060e41d5d5095212916a54dcc99ad25fe",
+    "createdAt": "2026-03-19T08:27:35.995Z",
+    "role": "user"
+  }
+]

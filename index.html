@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Quotipedia</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link
+        href="https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,400;0,700;1,400;1,700&family=DM+Mono:wght@300;400;500&family=DM+Sans:wght@300;400;500&display=swap"
+        rel="stylesheet" />
+    <link rel="stylesheet" href="styles.css" />
+</head>
+
+<body>
+
+    <header>
+        <a class="logo" href="#">Quotipedia</a>
+        <nav id="navArea">
+            <button class="btn" id="loginBtn">Sign in</button>
+            <button class="btn btn-primary" id="registerBtn">Join free</button>
+        </nav>
+    </header>
+
+    <main>
+
+        <div class="top-section">
+
+            <div class="hero">
+                <p class="hero-eyebrow">Words worth keeping</p>
+                <h1>A place for <em>quotes</em><br />that matter</h1>
+                <p class="hero-sub">Share the words that moved you. Curated by the community, for the community.</p>
+                <p class="hero-sub">It's that deep bro \[°_°]/</p>
+            </div>
+
+            <div id="submitPanel">
+                <h3>Share a quote</h3>
+                <div class="field">
+                    <label for="qText">The quote</label>
+                    <textarea id="qText" placeholder="The words themselves…"></textarea>
+                </div>
+                <div class="field">
+                    <label for="qAuthor">Attributed to <span class="optional">(optional)</span></label>
+                    <input type="text" id="qAuthor" placeholder="e.g. Marcus Aurelius" />
+                </div>
+                <div class="submit-row">
+                    <span id="submitMsg"></span>
+                    <button class="btn btn-primary" id="submitQuoteBtn">Publish quote</button>
+                </div>
+            </div>
+
+        </div>
+
+        <div class="feed-header">
+            <h2>Latest quotes</h2>
+            <span class="feed-count" id="feedCount"></span>
+        </div>
+        <div id="feed" class="quotes-grid">
+            <div class="loading">Loading quotes</div>
+        </div>
+
+    </main>
+
+    <div class="modal-backdrop" id="authModal">
+        <div class="modal">
+            <button class="modal-close" id="modalCloseBtn">✕</button>
+            <h2 id="modalTitle">Welcome back</h2>
+            <div class="field">
+                <label for="authUser">Username</label>
+                <input type="text" id="authUser" placeholder="your_username" autocomplete="username" />
+            </div>
+            <div class="field">
+                <label for="authPass">Password</label>
+                <input type="password" id="authPass" placeholder="••••••••" autocomplete="current-password" />
+            </div>
+            <div id="authError"></div>
+            <div class="modal-footer">
+                <button class="btn btn-primary" id="authSubmitBtn">Sign in</button>
+                <p class="modal-switch" id="modalSwitch">
+                    No account? <a id="modalToggleLink">Create one</a>
+                </p>
+            </div>
+        </div>
+    </div>
+
+    <!-- Migration modal — shown when a user logs in via legacy (SHA-256) password -->
+    <div class="modal-backdrop" id="migrateModal">
+        <div class="modal migrate-modal">
+            <h2>Password upgrade required</h2>
+            <p class="migrate-body">
+                Hi <strong id="migrateUsername"></strong> — your account uses an older password format.
+                We've upgraded to a much stronger hashing algorithm and your password needs to be migrated.
+                Your password itself doesn't change, only how it's stored.
+            </p>
+            <div id="migrateError"></div>
+            <div class="modal-footer">
+                <button class="btn btn-primary" id="migrateBtn">Migrate now</button>
+                <button class="btn" id="migrateSkipBtn">Remind me next time</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="toast"></div>
+
+    <script type="module" src="app.js"></script>
+</body>
+
+</html>
