@@ -335,35 +335,46 @@ migrateSkipBtn.addEventListener('click', () => {
 migrateBtn.addEventListener('click', doMigrate)
 
 async function doMigrate() {
-    if (!pendingMigration) return
-    const { username, password } = pendingMigration
-
-    migrateBtn.disabled = true
-    migrateBtn.textContent = 'Migrating…'
-    migrateError.textContent = ''
-
-    try {
-        // Register in the new db with the same credentials
-        try {
-            await db.auth.register(username, password)
-        } catch (regErr) {
-            if (regErr instanceof DatabaseError && regErr.httpStatus === 409) {
-                await db.auth.login(username, password)
-            } else {
-                throw regErr
-            }
-        }
-
-        closeMigrateModal()
-        updateNav(db.auth.currentUser)
-        showToast('Password migrated successfully!', 'success')
-        loadQuotes()
-    } catch (e) {
-        migrateError.textContent = userMessage(e)
-    } finally {
-        migrateBtn.disabled = false
-        migrateBtn.textContent = 'Migrate now'
-    }
+  if (!pendingMigration) return
+  const { username, password } = pendingMigration
+ 
+  migrateBtn.disabled      = true
+  migrateBtn.textContent   = 'Migrating…'
+  migrateError.textContent = ''
+ 
+  try {
+    const usersFile = `${legacyDb.basePath}/_auth/users.json`
+    const file      = await legacyDb.filesystem.readFile(usersFile)
+    if (!file) throw new DatabaseError('User store not found', 404)
+ 
+    const users     = file.content
+    const userIndex = users.findIndex(u => u.username.toLowerCase() === username.toLowerCase())
+    if (userIndex === -1) throw new DatabaseError('User not found', 404)
+ 
+    // Compute new PBKDF2 hash — same context format as github-db's hashPassword()
+    users[userIndex].passwordHash = await GitHubDB.hashSecret(password, username.toLowerCase())
+    users[userIndex].updatedAt    = new Date().toISOString()
+ 
+    await legacyDb.filesystem.writeFile(
+      usersFile,
+      users,
+      `auth: migrate hash ${username}`,
+      file.sha
+    )
+ 
+    // Now the file has a PBKDF2 hash — log in with the new db normally
+    await db.auth.login(username, password)
+ 
+    closeMigrateModal()
+    updateNav(db.auth.currentUser)
+    showToast('Password migrated successfully!', 'success')
+    loadQuotes()
+  } catch (e) {
+    migrateError.textContent = userMessage(e)
+  } finally {
+    migrateBtn.disabled    = false
+    migrateBtn.textContent = 'Migrate now'
+  }
 }
 
 // ── Nav ───────────────────────────────────────────────────────────
