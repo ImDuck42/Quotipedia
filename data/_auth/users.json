@@ -70,5 +70,12 @@
     "passwordHash": "6d86754f2083fd7d1571079a62b7742060e41d5d5095212916a54dcc99ad25fe",
     "createdAt": "2026-03-19T08:27:35.995Z",
     "role": "user"
+  },
+  {
+    "id": "mmymuvp4-3h4947300o1w",
+    "username": "Xx_AustrianGamer",
+    "passwordHash": "4196390a0d2cdd522a09b555e0b08791:5a6f9f5380d71acdb890069fd70285f49d48e61ee220265da60919aa47d253af",
+    "createdAt": "2026-03-20T08:24:23.873Z",
+    "role": "user"
   }
 ]
