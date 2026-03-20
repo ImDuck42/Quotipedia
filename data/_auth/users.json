@@ -10,9 +10,10 @@
   {
     "id": "mmx30k4k-1q0q0w2i2w6s",
     "username": "bob",
-    "passwordHash": "5f7780c866a596e4ddc6819655bb635b180ec30e5574456977b7503c3c2a007c",
+    "passwordHash": "09cbde4b010d5fa4456a18df406e4ad8:97cecb2f3eb976650809e1b19c2cbb7e3fd85b7f3a755716c8109335af4a2f0b",
     "createdAt": "2026-03-19T06:21:10.260Z",
-    "role": "user"
+    "role": "user",
+    "updatedAt": "2026-03-20T08:20:09.223Z"
   },
   {
     "id": "mmx3qfh3-0b2v674l4v6j",
