@@ -509,6 +509,12 @@ async function init(cfg) {
             useCDN:      cfg.useCDN,
             enrollToken: cfg.enrollToken,
         })
+        db.permissions({
+            quotes: { read: 'public', write: 'auth'},
+            _kv:    { read: 'public', write: 'auth'},
+        })
+
+        if (db.auth.isLoggedIn) await db.auth.verifySession()
 
         updateNav(db.auth.isLoggedIn ? db.auth.currentUser : null)
         loadQuotes()
