@@ -163,15 +163,6 @@ main {
         }
     }
 
-    & .hero-eyebrow {
-        font-family: 'DM Mono', monospace;
-        font-size: 0.7rem;
-        color: var(--muted);
-        letter-spacing: 0.2em;
-        text-transform: uppercase;
-        margin-bottom: 1.2rem;
-    }
-
     & h1 {
         font-family: 'Playfair Display', serif;
         font-size: clamp(2.2rem, 4vw, 4rem);
@@ -680,4 +671,359 @@ main {
     50% {
         opacity: 0;
     }
+}
+/* ── Quote author button ── */
+.quote-author-btn {
+    background: none;
+    border: none;
+    padding: 0;
+    cursor: pointer;
+    font-family: 'DM Mono', monospace;
+    font-size: 0.68rem;
+    color: var(--accent);
+    letter-spacing: 0.05em;
+    transition: color 0.2s;
+
+    &:hover {
+        color: var(--accent2);
+        text-decoration: underline;
+    }
+
+    & .by-label {
+        color: var(--muted);
+        margin-right: 4px;
+    }
+}
+
+/* ── User chip name button ── */
+.user-chip-name {
+    background: none;
+    border: none;
+    padding: 0;
+    cursor: pointer;
+    font-family: 'DM Mono', monospace;
+    font-size: 0.7rem;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    transition: color 0.2s;
+}
+
+.user-chip-name strong {
+    color: var(--accent);
+}
+
+.user-chip-name:hover strong {
+    text-decoration: underline;
+}
+
+/* ── Profile view (full-screen slide-up) ── */
+#profileView {
+    position: fixed;
+    inset: 0;
+    z-index: 150;
+    background: var(--bg);
+    overflow-y: auto;
+    display: none;
+}
+
+#profileView.open {
+    display: block;
+}
+
+.pv-inner {
+    min-height: 100vh;
+    position: relative;
+}
+
+.pv-close {
+    position: fixed;
+    top: 1.2rem;
+    right: 1.5rem;
+    z-index: 10;
+    background: rgba(13,13,13,0.7);
+    border: 1px solid var(--border);
+    color: var(--muted);
+    cursor: pointer;
+    font-size: 1rem;
+    width: 36px;
+    height: 36px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    backdrop-filter: blur(8px);
+    transition: color 0.2s, border-color 0.2s;
+}
+
+.pv-close:hover {
+    color: var(--text);
+    border-color: var(--accent);
+}
+
+.pv-loading {
+    text-align: center;
+    padding: 8rem 2rem;
+    font-family: 'DM Mono', monospace;
+    font-size: 0.7rem;
+    color: var(--muted);
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+}
+
+.pv-loading::after {
+    content: '';
+    display: inline-block;
+    width: 4px;
+    height: 4px;
+    border-radius: 50%;
+    background: var(--muted);
+    margin-left: 8px;
+    vertical-align: middle;
+    animation: blink 1s infinite;
+}
+
+.pv-banner {
+    width: 100%;
+    height: 220px;
+    background: var(--surface);
+    background-size: cover;
+    background-position: center;
+    position: relative;
+}
+
+@media (max-width: 600px) {
+    .pv-banner { height: 160px; }
+}
+
+.pv-banner-overlay {
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(to bottom, transparent 40%, var(--bg) 100%);
+}
+
+.pv-body {
+    max-width: 860px;
+    margin: 0 auto;
+    padding: 0 2.5rem 5rem;
+}
+
+@media (max-width: 600px) {
+    .pv-body { padding: 0 1.2rem 4rem; }
+}
+
+.pv-header {
+    display: flex;
+    align-items: flex-start;
+    gap: 1.5rem;
+    margin-top: -40px;
+    position: relative;
+}
+
+@media (max-width: 600px) {
+    .pv-header { flex-wrap: wrap; gap: 1rem; }
+}
+
+.pv-avatar-wrap { flex-shrink: 0; }
+
+.pv-avatar {
+    width: 88px;
+    height: 88px;
+    border-radius: 50%;
+    border: 3px solid var(--bg);
+    object-fit: cover;
+    display: block;
+}
+
+.pv-avatar-default {
+    width: 88px;
+    height: 88px;
+    border-radius: 50%;
+    border: 3px solid var(--bg);
+    background: var(--surface2);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: 'Playfair Display', serif;
+    font-size: 2rem;
+    color: var(--accent);
+}
+
+@media (max-width: 600px) {
+    .pv-avatar, .pv-avatar-default { width: 72px; height: 72px; }
+    .pv-avatar-default { font-size: 1.6rem; }
+}
+
+.pv-identity {
+    flex: 1;
+    padding-top: 1rem;
+    min-width: 0;
+}
+
+.pv-username {
+    font-family: 'Playfair Display', serif;
+    font-size: 1.8rem;
+    font-weight: 400;
+    font-style: italic;
+    color: var(--accent);
+    margin-bottom: 0.4rem;
+    word-break: break-word;
+}
+
+.pv-bio {
+    font-size: 0.9rem;
+    color: var(--muted);
+    line-height: 1.6;
+    margin-bottom: 0.75rem;
+    max-width: 480px;
+}
+
+.pv-socials {
+    display: flex;
+    gap: 0.6rem;
+    flex-wrap: wrap;
+}
+
+.pv-social {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    color: var(--muted);
+    text-decoration: none;
+    transition: color 0.2s, border-color 0.2s;
+}
+
+.pv-social svg { width: 15px; height: 15px; }
+
+.pv-social:hover {
+    color: var(--accent);
+    border-color: var(--accent);
+}
+
+.pv-edit-btn {
+    flex-shrink: 0;
+    margin-top: 1rem;
+    align-self: flex-start;
+}
+
+.pv-section-label {
+    font-family: 'DM Mono', monospace;
+    font-size: 0.65rem;
+    text-transform: uppercase;
+    letter-spacing: 0.14em;
+    color: var(--muted);
+    margin: 2.5rem 0 1.2rem;
+    padding-bottom: 0.75rem;
+    border-bottom: 1px solid var(--border);
+}
+
+.pv-quotes {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 12px;
+}
+
+@media (min-width: 540px) {
+    .pv-quotes { grid-template-columns: repeat(2, 1fr); }
+}
+
+.pv-no-quotes {
+    font-family: 'Playfair Display', serif;
+    font-style: italic;
+    color: var(--muted);
+    font-size: 1rem;
+    padding: 2rem 0;
+}
+
+.pv-quote-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 1.5rem 1.8rem;
+    position: relative;
+    animation: fadeUp 0.3s ease both;
+}
+
+.pv-quote-mark {
+    font-family: 'Playfair Display', serif;
+    font-size: 3rem;
+    line-height: 0;
+    color: var(--accent);
+    opacity: 0.2;
+    position: absolute;
+    top: 1.2rem;
+    left: 1.2rem;
+    pointer-events: none;
+}
+
+.pv-quote-text {
+    font-family: 'Playfair Display', serif;
+    font-size: 1rem;
+    font-style: italic;
+    line-height: 1.6;
+    color: var(--text);
+    padding-left: 1rem;
+}
+
+.pv-quote-by {
+    display: block;
+    font-family: 'Playfair Display', serif;
+    font-size: 0.82rem;
+    color: var(--muted);
+    font-style: italic;
+    margin-top: 0.75rem;
+    padding-left: 1rem;
+}
+
+/* ── Edit profile modal extras ── */
+.modal-wide {
+    width: min(580px, 95vw);
+}
+
+.ep-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0 1rem;
+}
+
+@media (max-width: 480px) {
+    .ep-grid { grid-template-columns: 1fr; }
+}
+
+.ep-socials-label {
+    font-family: 'DM Mono', monospace;
+    font-size: 0.62rem;
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    color: var(--muted);
+    margin: 0.5rem 0 0.75rem;
+    padding-top: 0.75rem;
+    border-top: 1px solid var(--border);
+}
+
+.ep-socials-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0 1rem;
+}
+
+@media (max-width: 480px) {
+    .ep-socials-grid { grid-template-columns: 1fr; }
+}
+
+#epError {
+    font-family: 'DM Mono', monospace;
+    font-size: 0.72rem;
+    color: var(--danger);
+    margin-top: 0.5rem;
+    min-height: 1.2em;
+}
+
+.ep-footer {
+    flex-direction: row !important;
+    justify-content: flex-end;
 }
