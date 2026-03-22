@@ -4,8 +4,8 @@ import { GitHubDB, DatabaseError } from './github-db.js'
 
 const DEFAULT_CONFIG = {
     owner: 'ImDuck42',
-    repo: 'random',
-    publicToken: 'ghdb_enc_ICEwKjIqGzImPBtzdgoFcBQOcAN3InYwdC8BMysvJws/FwgHDXlxLwIyFA8XcXQmFXsrFS86AScqARUBAXoNLigEIwN3DnUbNicTKwkGBwwWHhwWDxoIAQM9DCct',
+    repo: 'Quotipedia',
+    publicToken: 'ghdb_enc_ICEwKjIqGzImPBtzdgoFcBQOcAN3GSsXARAhKg8PFDEGFz0Adw4nKj0xBzJ/PykXETAqICgFLxoKHTUnPhwqKn97AxYXLBcPNTgwCxAfDnR0HwkaFyYgLhIkIg8T',
     useCDN: true,
 }
 
