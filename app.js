@@ -6,7 +6,7 @@ const DEFAULT_CONFIG = {
     owner: 'ImDuck42',
     repo: 'Quotipedia',
     publicToken: 'ghdb_enc_ICEwKjIqGzImPBtzdgoFcBQOcAN3GSsXARAhKg8PFDEGFz0Adw4nKj0xBzJ/PykXETAqICgFLxoKHTUnPhwqKn97AxYXLBcPNTgwCxAfDnR0HwkaFyYgLhIkIg8T',
-    useCDN: true,
+    useCDN: false,
 }
 
 function getConfig() {
