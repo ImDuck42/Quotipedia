@@ -1,7 +1,7 @@
 {
   "id": "mn1xil5c-25394e4y250u",
   "username": "12345678",
-  "passwordHash": "68a848152a31a3842ca8dd3ba6735bf4:39f4920eb14d8ccd74405358b6ba0e58e86112d316007dd772899f0e0aa62860",
+  "passwordHash": "",
   "createdAt": "2026-03-22T15:46:04.661Z",
   "roles": [
     "user"
