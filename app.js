@@ -86,6 +86,11 @@ function escHtml(string) {
         .replace(/"/g, '&quot;')
 }
 
+// Like escHtml but converts newlines to <br> for display in HTML
+function escHtmlNl(string) {
+    return escHtml(string).replace(/\n/g, '<br>')
+}
+
 function timeAgo(date) {
     const diffSeconds = (Date.now() - date) / 1000
     if (diffSeconds < 60)     return 'just now'
@@ -199,10 +204,10 @@ async function renderProfileView(username) {
                     </div>
                     <div class="pv-identity">
                         <h2 class="pv-username">${escHtml(username)}</h2>
-                        ${profile.bio ? `<p class="pv-bio">${escHtml(profile.bio)}</p>` : ''}
+                        ${profile.bio ? `<p class="pv-bio">${escHtmlNl(profile.bio)}</p>` : ''}
                         ${socialLinks ? `<div class="pv-socials">${socialLinks}</div>` : ''}
+                        ${isOwnProfile ? `<button class="btn btn-sm pv-edit-btn" id="pvEditBtn">Edit profile</button>` : ''}
                     </div>
-                    ${isOwnProfile ? `<button class="btn btn-sm pv-edit-btn" id="pvEditBtn">Edit profile</button>` : ''}
                 </div>
 
                 <div class="pv-section-label">Quotes by ${escHtml(username)}</div>

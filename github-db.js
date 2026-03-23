@@ -137,6 +137,7 @@
 
 const GITHUB_API_BASE     = 'https://api.github.com'
 const JSDELIVR_RAW_BASE   = 'https://cdn.jsdelivr.net/gh'
+const JSDELIVR_PURGE_BASE = 'https://purge.jsdelivr.net/gh'
 const GITHUB_API_VERSION  = '2022-11-28'
 
 const SESSION_STORAGE_KEY = '__githubdb_session__'
@@ -444,6 +445,15 @@ class GitHubFilesystem {
     throw new DatabaseError(`GitHub API rate limit exceeded.${when}`, 429)
   }
 
+  /**
+   * Purge a file from the jsDelivr CDN cache after a write or delete.  
+   * @param {string} filePath
+   */
+  purgeCDNFile(filePath) {
+    const url = `${JSDELIVR_PURGE_BASE}/${this.owner}/${this.repo}@${this.branch}/${filePath}`
+    fetch(url).catch(() => {})
+  }
+
   /** Read any JSON file via the jsDelivr CDN. Returns null for 404. */
   async readCDNFile(path) {
     const url      = `${JSDELIVR_RAW_BASE}/${this.owner}/${this.repo}@${this.branch}/${path}`
@@ -480,7 +490,9 @@ class GitHubFilesystem {
       body: JSON.stringify(body),
     })
     if (!response.ok) { await this.throwApiError(response, `Write failed (${response.status})`) }
-    return response.json()
+    const result = await response.json()
+    this.purgeCDNFile(path)
+    return result
   }
 
   /**
@@ -496,6 +508,7 @@ class GitHubFilesystem {
       body: JSON.stringify({ message: commitMessage, sha: existing.sha, branch: this.branch }),
     })
     if (!response.ok) { await this.throwApiError(response, `Delete failed (${response.status})`) }
+    this.purgeCDNFile(path)
     return true
   }
 
@@ -618,9 +631,9 @@ class Collection {
    * @param {string}                  collectionName Leaf collection name, used in permission lookups.
    * @param {SessionState}            sessionState
    * @param {function(): object|null} getPermissions Returns the current permissions map.
-   * @param {boolean}                 [useCDN=false]
+   * @param {boolean}                 [useCDN=true]
    */
-  constructor(filesystem, collectionPath, collectionName, sessionState, getPermissions, useCDN = false) {
+  constructor(filesystem, collectionPath, collectionName, sessionState, getPermissions, useCDN = true) {
     this.filesystem     = filesystem
     this.name           = collectionName
     this.collectionPath = collectionPath
@@ -964,11 +977,11 @@ class KeyValueStore {
   /**
    * @param {GitHubFilesystem}           filesystem
    * @param {string}                     basePath
-   * @param {boolean}                    [useCDN=false]
+   * @param {boolean}                    [useCDN=true]
    * @param {SessionState|null}          [session=null]
    * @param {function(): object|null}    [getPermissions=null]
    */
-  constructor(filesystem, basePath, useCDN = false, session = null, getPermissions = null) {
+  constructor(filesystem, basePath, useCDN = true, session = null, getPermissions = null) {
     this.filesystem     = filesystem
     this.useCDN         = useCDN
     this.kvPath         = `${basePath}/_kv`
@@ -1365,10 +1378,10 @@ class GitHubDB {
    * @param {GitHubFilesystem} filesystem
    * @param {object}  [options]
    * @param {string}  [options.basePath='data']
-   * @param {boolean} [options.useCDN=false]
+   * @param {boolean} [options.useCDN=true]
    * @param {boolean} [options.enrollToken=true] Set `false` to skip public-token registration (owner mode).
    */
-  constructor(filesystem, { basePath = 'data', useCDN = false, enrollToken = true } = {}) {
+  constructor(filesystem, { basePath = 'data', useCDN = true, enrollToken = true } = {}) {
     this.filesystem     = filesystem
     this.basePath       = basePath
     this.useCDN         = useCDN
@@ -1432,7 +1445,7 @@ class GitHubDB {
    * @param   {{ owner: string, repo: string, token: string, branch?: string, basePath?: string, useCDN?: boolean }} config
    * @returns {Promise<GitHubDB>}
    */
-  static async owner({ owner, repo, token, branch = 'main', basePath = 'data', useCDN = false }) {
+  static async owner({ owner, repo, token, branch = 'main', basePath = 'data', useCDN = true }) {
     const db = new GitHubDB(new GitHubFilesystem({ owner, repo, token, branch }), { basePath, useCDN, enrollToken: false })
     await db.assertNotPublicToken(token)
     return db
@@ -1444,7 +1457,7 @@ class GitHubDB {
    * @param   {{ owner: string, repo: string, publicToken: string, branch?: string, basePath?: string, useCDN?: boolean, enrollToken?: boolean }} config
    * @returns {Promise<GitHubDB>}
    */
-  static async public({ owner, repo, publicToken, branch = 'main', basePath = 'data', useCDN = false, enrollToken = true }) {
+  static async public({ owner, repo, publicToken, branch = 'main', basePath = 'data', useCDN = true, enrollToken = true }) {
     const token = publicToken.startsWith(ENCODE_PREFIX)
       ? xorRotate(decodeBase64(publicToken.slice(ENCODE_PREFIX.length)))
       : publicToken
@@ -1452,28 +1465,6 @@ class GitHubDB {
     await db.enrollPublicToken(publicToken).catch(error => {
       console.warn('[GitHubDB] Could not enroll public token:', error)
     })
-    return db
-  }
-
-	/**
-	 * **Login mode** — authenticate an existing user account, then return an authenticated `GitHubDB` instance.
-	 * @param   {{ owner: string, repo: string, publicToken: string, username: string, password: string, branch?: string, basePath?: string, useCDN?: boolean }} config
-	 * @returns {Promise<GitHubDB>}
-	 */
-  static async login({ owner, repo, publicToken, username, password, branch = 'main', basePath = 'data', useCDN = false }) {
-    const db = await GitHubDB.public({ owner, repo, publicToken, branch, basePath, useCDN })
-    await db.auth.login(username, password)
-    return db
-  }
-
-	/**
-	 * **Register mode** — create a new user account, then return an authenticated `GitHubDB` instance.
-	 * @param   {{ owner: string, repo: string, publicToken: string, username: string, password: string, branch?: string, basePath?: string, useCDN?: boolean }} config
-	 * @returns {Promise<GitHubDB>}
-	 */
-	static async register({ owner, repo, publicToken, username, password, branch = 'main', basePath = 'data', useCDN = false }) {
-    const db = await GitHubDB.public({ owner, repo, publicToken, branch, basePath, useCDN })
-    await db.auth.register(username, password)
     return db
   }
 

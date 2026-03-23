@@ -308,16 +308,15 @@ main {
 }
 
 .quotes-grid {
-    display: grid;
-    grid-template-columns: 1fr;
-    gap: 12px;
+    columns: 1;
+    column-gap: 12px;
 
     @media (min-width: 640px) {
-        grid-template-columns: repeat(2, 1fr);
+        columns: 2;
     }
 
     @media (min-width: 1024px) {
-        grid-template-columns: repeat(3, 1fr);
+        columns: 3;
     }
 }
 
@@ -332,6 +331,8 @@ main {
     animation: fadeUp 0.4s ease both;
     display: flex;
     flex-direction: column;
+    break-inside: avoid;
+    margin-bottom: 12px;
 
     &:hover {
         border-color: #3a3a3a;
@@ -922,13 +923,12 @@ main {
 }
 
 .pv-quotes {
-    display: grid;
-    grid-template-columns: 1fr;
-    gap: 12px;
+    columns: 1;
+    column-gap: 12px;
 }
 
 @media (min-width: 540px) {
-    .pv-quotes { grid-template-columns: repeat(2, 1fr); }
+    .pv-quotes { columns: 2; }
 }
 
 .pv-no-quotes {
@@ -946,6 +946,8 @@ main {
     padding: 1.5rem 1.8rem;
     position: relative;
     animation: fadeUp 0.3s ease both;
+    break-inside: avoid;
+    margin-bottom: 12px;
 }
 
 .pv-quote-mark {
