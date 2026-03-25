@@ -6,7 +6,6 @@ const DEFAULT_CONFIG = {
     owner: 'ImDuck42',
     repo: 'Quotipedia',
     publicToken: 'ghdb_enc_ICEwKjIqGzImPBtzdgoFcBQOcAN3GSsXARAhKg8PFDEGFz0Adw4nKj0xBzJ/PykXETAqICgFLxoKHTUnPhwqKn97AxYXLBcPNTgwCxAfDnR0HwkaFyYgLhIkIg8T',
-    useCDN: true,
 }
 
 function getConfig() {
@@ -16,8 +15,9 @@ function getConfig() {
 
 // ── State ─────────────────────────────────────────────────────────
 
-let db       = null
-let authMode = 'login'
+let db           = null
+let authMode     = 'login'
+let cachedQuotes = []
 
 // ── DOM refs ──────────────────────────────────────────────────────
 
@@ -159,10 +159,11 @@ async function renderProfileView(username) {
 
     const [profile, quotes] = await Promise.all([
         loadProfile(username),
-        db ? db.collection('quotes').query(r => r.postedBy === username, {
-            sort: (a, b) => new Date(b.createdAt) - new Date(a.createdAt),
-            limit: 6,
-        }).catch(() => []) : Promise.resolve([]),
+        Promise.resolve(
+            cachedQuotes
+                .filter(r => r.postedBy === username)
+                .slice(0, 6)
+        ),
     ])
 
     const isOwnProfile = db?.auth?.isLoggedIn && db.auth.currentUser?.username === username
@@ -320,10 +321,9 @@ async function loadQuotes() {
     if (!db) return
     feed.innerHTML = '<div class="loading">Loading quotes</div>'
     try {
-        const quotes = await db.collection('quotes').query(
-            () => true,
-            { sort: (quoteA, quoteB) => new Date(quoteB.createdAt) - new Date(quoteA.createdAt) }
-        )
+        const quotes = (await db.collection('quotes').list())
+            .sort((quoteA, quoteB) => new Date(quoteB.createdAt) - new Date(quoteA.createdAt))
+        cachedQuotes = quotes
         const count = quotes.length
         feedCount.textContent = count ? `${count} quote${count !== 1 ? 's' : ''}` : ''
 
@@ -511,7 +511,6 @@ async function init(cfg) {
             owner:       cfg.owner,
             repo:        cfg.repo,
             publicToken: cfg.publicToken,
-            useCDN:      cfg.useCDN,
             enrollToken: cfg.enrollToken,
         })
         db.permissions({
@@ -522,7 +521,7 @@ async function init(cfg) {
         if (db.auth.isLoggedIn) await db.auth.verifySession()
 
         updateNav(db.auth.isLoggedIn ? db.auth.currentUser : null)
-        loadQuotes()
+        await loadQuotes()
 
         if (location.hash.startsWith('#profile/')) {
             const username = decodeURIComponent(location.hash.slice(9))

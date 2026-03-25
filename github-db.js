@@ -3,140 +3,136 @@
  * ║                                                             github-db.js                                                             ║
  * ║                                   A JSON / GitHub based database where every write is a git commit                                   ║
  * ╚══════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╝
- * ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
- * QUICK START
- * ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
- * 1. OWNER MODE — your own PAT, full control
+ *
+ * ═══ QUICK START ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+ *
+ *  Owner mode — your own PAT, full control:
  *    const db = await GitHubDB.owner({ owner, repo, token })
+ *    const db = await GitHubDB.owner({ owner, repo, token, ghBranch: 'main', cdnBranch: 'master' })
  *
- * 2. PUBLIC MODE — embedded bot token, visitors can interact without their own PAT
- *    const db = await GitHubDB.public({ owner, repo, publicToken, branch, basePath, useCDN, enrollToken })
+ *  Public mode — embed a bot token so visitors can interact without their own PAT:
+ *    const db = await GitHubDB.public({ owner, repo, publicToken, ghBranch, cdnBranch, basePath, useCDN, enrollToken })
  *
- * 3. CDN MODE (recommended for public read-heavy apps — reads bypass the API rate limit)
+ *  CDN mode — recommended for public read-heavy apps (reads bypass API rate limits):
  *    const db = await GitHubDB.public({ ..., useCDN: true })
+ *    // ghBranch  — branch used for GitHub API reads/writes   (default: 'main')
+ *    // cdnBranch — branch used for jsDelivr CDN reads/purges (default: 'master')
  *
- * ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
- * PERMISSIONS  (default: admin-only for everything unless explicitly overridden)
- * ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
- *    // Call db.permissions() after init to set access levels per collection or KV key.
- *    // Any collection or KV key not listed defaults to { read: 'admin', write: 'admin' }.
- *    // Permission levels: 'public' (anyone), 'auth' (logged-in users), 'admin' (admin role only — the first user is automatically admin)
- *    // Custom roles: any string or array of strings — e.g. 'moderator' or ['editor', 'moderator']
- *    // Admins always pass any permission check regardless of the required level.
+ * ═══ PERMISSIONS ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
  *
- *    db.permissions({
- *      posts:          { read: 'public',                             write: 'auth'                    }, // anyone reads, login to write
- *      settings:       { read: 'admin',                              write: 'admin'                   }, // admin only
- *      comments:       { read: 'auth',                               write: 'auth'                    }, // login required for both
- *      drafts:         { read: 'editor',                             write: 'editor'                  }, // single custom role
- *      reports:        { read: ['moderator', 'analyst', 'auditor'],  write: ['moderator', 'admin']    }, // multiple roles can read
- *      'posts.abc123': { read: 'admin',                              write: 'admin'                   }, // lock a specific record
- *      _kv:            { read: 'auth',                               write: 'admin'                   }, // all KV keys default
- *      '_kv.theme':    { read: 'public',                             write: ['moderator', 'designer'] }, // per-key override
- *    })
+ *  Call db.permissions() after init to set per-collection or per-KV-key access.
+ *  Any entry not listed defaults to { read: 'admin', write: 'admin' }.
  *
- *    // Lookup priority per operation:
- *    //   collection.recordId  ->  collection  ->  default 'admin'
- *    //   _kv.keyName          ->  _kv         ->  default 'admin'
+ *  Permission levels:
+ *    'public'   — anyone, no login required
+ *    'auth'     — any logged-in user
+ *    'admin'    — admin role only (the first registered user is automatically admin)
+ *    custom     — any string or array of strings, e.g. 'moderator' or ['editor', 'moderator']
+ *  Admins always pass any permission check regardless of the required level.
  *
- * ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
- * COLLECTIONS  (stored at `<basePath>/<collection>/<id>.json`)
- * ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ *  db.permissions({
+ *    posts:          { read: 'public',                            write: 'auth'                    },
+ *    settings:       { read: 'admin',                             write: 'admin'                   },
+ *    comments:       { read: 'auth',                              write: 'auth'                    },
+ *    drafts:         { read: 'editor',                            write: 'editor'                  },
+ *    reports:        { read: ['moderator', 'analyst', 'auditor'], write: ['moderator', 'admin']    },
+ *    'posts.abc123': { read: 'admin',                             write: 'admin'                   },
+ *    _kv:            { read: 'auth',                              write: 'admin'                   },
+ *    '_kv.theme':    { read: 'public',                            write: ['moderator', 'designer'] },
+ *  })
+ *
+ *  Lookup priority per operation:
+ *    collection.recordId -> collection -> default 'admin'
+ *    _kv.keyName         -> _kv        -> default 'admin'
+ *
+ * ═══ COLLECTIONS  (stored at <basePath>/<collection>/<id>.json) ═════════════════════════════════════════════════════════════════════════
+ *
  *    const posts = db.collection('posts')
  *
- *    await posts.add({ title: 'Hello' })                                                   // create
- *    await posts.get(id)                                                                   // fetch one -> record | null
- *    await posts.list()                                                                    // fetch all
- *    await posts.update(id, { title: 'New' })                                              // partial patch
- *    await posts.replace(id, { title: 'New' })                                             // full replace
- *    await posts.remove(id)                                                                // delete
- *    await posts.upsert(id, data)                                                          // create-or-patch
- *    await posts.query(record => record.published)                                         // filter in memory
- *    await posts.query(fn, { sort, limit, offset })                                        // with options
- *    await posts.findOne(record => record.slug === 'hello')                                // first match | null
- *    await posts.count()                                                                   // total count
- *    await posts.count(record => record.published)                                         // filtered count
- *    await posts.exists(id)                                                                // boolean
- *    await posts.bulkAdd([{ ... }, { ... }])                                               // add many
- *    await posts.bulkRemove([id1, id2])                                                    // remove many
- *    await posts.clear()                                                                   // delete all (irreversible)
- *    const stop = posts.subscribe(({ records, added, changed, removed }) => { ... }, 5000) // poll for changes
- *    stop()                                                                                // cancel subscription
+ *    await posts.add({ title: 'Hello' })                                              // create
+ *    await posts.get(id)                                                              // fetch one -> record | null
+ *    await posts.list()                                                               // fetch all
+ *    await posts.update(id, { title: 'New' })                                         // partial patch
+ *    await posts.replace(id, { title: 'New' })                                        // full replace
+ *    await posts.remove(id)                                                           // delete
+ *    await posts.upsert(id, data)                                                     // create-or-patch
+ *    await posts.query(record => record.published)                                    // filter in memory
+ *    await posts.query(fn, { sort, limit, offset })                                   // with options
+ *    await posts.findOne(record => record.slug === 'hello')                           // first match | null
+ *    await posts.count()                                                              // total count
+ *    await posts.count(record => record.published)                                    // filtered count
+ *    await posts.exists(id)                                                           // boolean
+ *    await posts.bulkAdd([{ ... }, { ... }])                                          // add many
+ *    await posts.bulkRemove([id1, id2])                                               // remove many
+ *    await posts.clear()                                                              // delete all (irreversible)
+ *    const stop = posts.subscribe(({ records, added, changed, removed }) => {}, 5000) // poll for changes
+ *    stop()                                                                           // cancel subscription
  *
- * ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
- * SUBCOLLECTIONS  (nested collections inside a collection)
- * ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ * ═══ SUBCOLLECTIONS  (nested collections inside a collection) ═══════════════════════════════════════════════════════════════════════════
+ *
  *    // Nesting can go as deep as needed:
- *    const nest = db.collection('orgs', 'acme', 'teams', 'eng', 'members')
- *    await nest.add({ title: 'My first post' })
- *    await nest.list()
+ *    const members = db.collection('orgs', 'acme', 'teams', 'eng', 'members')
+ *    await members.add({ name: 'Alice' })
+ *    await members.list()
  *
- * ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
- * KEY-VALUE STORE  (stored at `<basePath>/_kv/<key>.json`)
- * ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ * ═══ KEY-VALUE STORE  (stored at <basePath>/_kv/<key>.json) ═════════════════════════════════════════════════════════════════════════════
+ *
  *    await db.kv.set('theme', 'dark')
- *    await db.kv.get('theme')                    // value | null
+ *    await db.kv.get('theme')                                                         // value | null
  *    await db.kv.delete('theme')
- *    await db.kv.has('theme')                    // boolean
- *    await db.kv.increment('views')              // atomic-ish counter
- *    await db.kv.increment('score', 5)           // increment by N
- *    await db.kv.getMany('key1', 'key2')         // { key1: v1, key2: v2 }
- *    await db.kv.getMany(['key1', 'key2'])       // array form also accepted
+ *    await db.kv.has('theme')                                                         // boolean
+ *    await db.kv.increment('views')                                                   // atomic-ish counter
+ *    await db.kv.increment('score', 5)                                                // increment by N
+ *    await db.kv.getMany('key1', 'key2')                                              // { key1: v1, key2: v2 }
+ *    await db.kv.getMany(['key1', 'key2'])                                            // array form also accepted
  *    await db.kv.setMany({ key1: v1, key2: v2 })
- *    await db.kv.getAll()                        // { key: value } for all KV entries
+ *    await db.kv.getAll()                                                             // { key: value } for all KV entries
+ *    const stop = db.kv.subscribe(({ records, added, changed, removed }) => {}, 5000) // poll for changes
+ *    stop()                                                                           // cancel subscription
  *
- * ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
- * AUTH  (stored at `<basePath>/_auth/<username>.json` per user)
- * ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
- *    await db.auth.register(username, password)               // -> safe user object { id, username, roles, createdAt }
- *    await db.auth.login(username, password)                  // -> safe user object
- *    await db.auth.verifySession()                            // -> boolean
- *    await db.auth.changePassword(username, oldPass, newPass)
+ * ═══ AUTH  (stored at <basePath>/_auth/<username>.json per user) ════════════════════════════════════════════════════════════════════════
+ *
+ *    await db.auth.register(username, password)           // -> safe user object { id, username, roles, createdAt }
+ *    await db.auth.login(username, password)              // -> safe user object
+ *    await db.auth.verifySession()                        // -> boolean
+ *    await db.auth.changePassword(username, oldPw, newPw)
  *    await db.auth.deleteAccount(username, password)
- *    await db.auth.listUsers()                                // safe fields only
- *    await db.auth.setRoles(username, roles)                  // admin only — e.g. 'moderator' or ['editor', 'moderator']
- *    db.auth.currentUser                                      // { id, username, roles, createdAt } | null
- *    db.auth.isLoggedIn                                       // boolean
+ *    await db.auth.listUsers()                            // safe fields only
+ *    await db.auth.setRoles(username, roles)              // admin only
+ *    db.auth.currentUser                                  // { id, username, roles, createdAt } | null
+ *    db.auth.isLoggedIn                                   // boolean
  *    db.auth.logout()
  *
- *    // Roles: first registered user gets ['admin']. All others default to ['user'].
- *    // Users can have multiple roles — e.g. ['editor', 'moderator']
- *    // Admins always pass any permission check regardless of required level.
- *    // 'public' and 'auth' are reserved and cannot be used as a role.
+ *    Roles: the first registered user gets ['admin']. All others default to ['user'].
+ *    Users can hold multiple roles — e.g. ['editor', 'moderator'].
+ *    Admins always pass any permission check.
+ *    'public' and 'auth' are reserved and cannot be used as role names.
  *
- * ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
- * HASHING ALGORITHM  (PBKDF2)
- * ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
- *    // Hash a password or PAT for safe storage
- *    const hash = await GitHubDB.hashSecret('my-password', 'optional-salt')
+ * ═══ HASHING  (PBKDF2-SHA256, 200 000 iterations) ═══════════════════════════════════════════════════════════════════════════════════════
  *
- *    // Verify a plaintext value against a stored hash
- *    const ok = await GitHubDB.verifySecret('my-password', hash, 'optional-salt')
+ *    const hash = await GitHubDB.hashSecret('my-password', 'optional-context')
+ *    const ok   = await GitHubDB.verifySecret('my-password', hash, 'optional-context')
  *
- *    // PBKDF2 with 200,000 SHA-256 iterations.
- *    // Even with full source code, reversing is computationally expensive.
+ * ═══ TOKEN ENCODING  (obfuscate a PAT before embedding in client-side code) ═════════════════════════════════════════════════════════════
  *
- * ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
- * TOKEN ENCODING  (obfuscate your PAT before embedding in client-side code)
- * ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
- *    const encoded = GitHubDB.encodeToken('ghp_myRealToken')                           // run once, paste result into your source
+ *    const encoded = GitHubDB.encodeToken('ghp_myRealToken') // run once, paste result into source
  *    // Pass the encoded string as publicToken — the library decodes it automatically.
- *    // Note: obfuscation only deters casual scraping.
+ *    // Note: obfuscation deters casual scraping only; it is not encryption.
  *
- * ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
- * UTILITIES
- * ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ * ═══ UTILITIES ══════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+ *
  *    await db.getCommitHistory(path?, limit?) // git audit log
- *    await db.validateConnection()            // throws if token/repo unreachable
+ *    await db.validateConnection()            // throws if token / repo is unreachable
  *    GitHubDB.encodeToken(plainToken)         // obfuscate PAT for embedding
  */
 
 'use strict'
 
-// ─── Constants ────────────────────────────────────────────────────────────────
+
+// ═══ Constants ════════════════════════════════════════════════════════════════
 
 const GITHUB_API_BASE     = 'https://api.github.com'
-const JSDELIVR_RAW_BASE   = 'https://cdn.jsdelivr.net/gh'
+const JSDELIVR_CDN_BASE   = 'https://cdn.jsdelivr.net/gh'
 const JSDELIVR_PURGE_BASE = 'https://purge.jsdelivr.net/gh'
 const GITHUB_API_VERSION  = '2022-11-28'
 
@@ -144,23 +140,26 @@ const SESSION_STORAGE_KEY = '__githubdb_session__'
 const SESSION_LIFETIME_MS = 8 * 60 * 60 * 1000 // 8 hours
 const MIN_PASSWORD_LENGTH = 8
 const MAX_WRITE_RETRIES   = 5
+const CONCURRENCY_LIMIT   = 10
+const QUERY_BATCH_SIZE    = 50
 
-// changing anything here invalidates all registered users
-const PASSWORD_PEPPER     = 'ghdb-pepper-4269'
-const PBKDF2_ITERATIONS   = 200_000
-const ENCODE_PREFIX       = 'ghdb_enc_'
-const TOKEN_XOR_KEY       = 'GHDB'
+// Changing any of the following constants invalidates all existing password hashes.
+const PASSWORD_PEPPER   = 'ghdb-pepper-4269'
+const PBKDF2_ITERATIONS = 200_000
+const ENCODE_PREFIX     = 'ghdb_enc_'
+const TOKEN_XOR_KEY     = 'GHDB'
 
 // Internal KV keys written by the auth system — excluded from kv.getAll().
-const INTERNAL_KV_KEYS    = new Set(['admin-exists', 'public'])
+const INTERNAL_KV_KEYS = new Set(['admin-exists', 'public'])
 
-// ─── Custom error class ───────────────────────────────────────────────────────
 
-/** All library errors are instances of DatabaseError. */
+// ═══ Error ════════════════════════════════════════════════════════════════════
+
+/** All errors thrown by this library are instances of DatabaseError. */
 class DatabaseError extends Error {
   /**
    * @param {string} message        Human-readable description of the error.
-   * @param {number} [httpStatus=0] The HTTP status code that triggered this.
+   * @param {number} [httpStatus=0] HTTP status code that triggered this error (0 if not HTTP-related).
    */
   constructor(message, httpStatus = 0) {
     super(message)
@@ -169,37 +168,230 @@ class DatabaseError extends Error {
   }
 }
 
-// ─── Validation helpers ───────────────────────────────────────────────────────
+
+// ═══ Validation ═══════════════════════════════════════════════════════════════
 
 /**
- * Validates IDs and keys — prevents path traversal.  
- * Only letters, numbers, hyphens, and underscores are allowed.
+ * Asserts that an ID or key only contains safe characters.  
+ * Prevents path traversal — only letters, numbers, hyphens, and underscores are allowed.
+ * @param {string} id
  */
 function assertValidId(id) {
   if (typeof id !== 'string' || !/^[a-zA-Z0-9_\-]+$/.test(id)) {
-    throw new DatabaseError(`Invalid ID or key format: "${id}". Use letters, numbers, hyphens, and underscores only.`)
+    throw new DatabaseError(
+      `Invalid ID or key: "${id}". Use letters, numbers, hyphens, and underscores only.`
+    )
   }
 }
 
-// ─── Concurrency helpers ──────────────────────────────────────────────────────
 
-/** Run async tasks over `items` with at most `limit` in flight at once. */
-async function runWithConcurrency(items, taskFn, limit = 10) {
+// ═══ ID Generation ════════════════════════════════════════════════════════════
+
+/**
+ * Generate a collision-resistant record ID in the form `<timestamp-base36>-<random-base36>`.
+ * @returns {string}
+ */
+function generateId() {
+  const timestamp = Date.now().toString(36)
+  let   randomPart
+
+  try {
+    randomPart = Array.from(crypto.getRandomValues(new Uint8Array(6)))
+      .map(byte => byte.toString(36).padStart(2, '0'))
+      .join('')
+  } catch {
+    randomPart = Math.floor(Math.random() * Number.MAX_SAFE_INTEGER).toString(36).slice(0, 12)
+  }
+
+  return `${timestamp}-${randomPart}`
+}
+
+
+// ═══ Base64 ═══════════════════════════════════════════════════════════════════
+
+/**
+ * Encode a UTF-8 string to base64 (works in both Node.js and browsers).
+ * @param   {string} text
+ * @returns {string}
+ */
+function encodeBase64(text) {
+  if (typeof Buffer !== 'undefined') {
+    return Buffer.from(text, 'utf-8').toString('base64')
+  }
+  const bytes  = new TextEncoder().encode(text)
+  const chunks = []
+  for (let offset = 0; offset < bytes.length; offset += 8192) {
+    chunks.push(String.fromCharCode(...bytes.subarray(offset, offset + 8192)))
+  }
+  return btoa(chunks.join(''))
+}
+
+/**
+ * Decode a base64 string to UTF-8.
+ * @param   {string} base64
+ * @returns {string}
+ */
+function decodeBase64(base64) {
+  if (typeof Buffer !== 'undefined') {
+    return Buffer.from(base64, 'base64').toString('utf-8')
+  }
+  const binaryString = atob(base64.replace(/\n/g, ''))
+  const bytes        = new Uint8Array(binaryString.length)
+  for (let i = 0; i  < binaryString.length; i++) {
+    bytes[i] = binaryString.charCodeAt(i)
+  }
+  return new TextDecoder().decode(bytes)
+}
+
+/** Serialize a value to base64-encoded JSON for the GitHub Contents API. */
+const encodeFileContent = value  => encodeBase64(JSON.stringify(value, null, 2))
+
+/** Deserialize a base64-encoded string returned by the GitHub Contents API. */
+const decodeFileContent = base64 => JSON.parse(decodeBase64(base64))
+
+
+// ═══ Token Obfuscation ════════════════════════════════════════════════════════
+
+/**
+ * Obfuscate a plain PAT to a prefixed base64+XOR string suitable for embedding in client code.
+ * @param   {string} plainToken
+ * @returns {string}
+ */
+function encodeToken(plainToken) {
+  return ENCODE_PREFIX + encodeBase64(
+    Array.from(plainToken)
+      .map((char, i) =>
+        String.fromCharCode(char.charCodeAt(0) ^ TOKEN_XOR_KEY.charCodeAt(i % TOKEN_XOR_KEY.length))
+      )
+      .join('')
+  )
+}
+
+/**
+ * Resolve a token that may be plain or obfuscated.
+ * @param   {string} token
+ * @returns {string}
+ */
+function resolveToken(token) {
+  if (!token.startsWith(ENCODE_PREFIX)) return token
+
+  const payload = token.slice(ENCODE_PREFIX.length)
+  const decoded = decodeBase64(payload)
+
+  return Array.from(decoded)
+    .map((char, i) =>
+      String.fromCharCode(char.charCodeAt(0) ^ TOKEN_XOR_KEY.charCodeAt(i % TOKEN_XOR_KEY.length))
+    )
+    .join('')
+}
+
+
+// ═══ Cryptographic Hashing (PBKDF2-SHA256) ═══════════════════════════════════
+
+/**
+ * Internal PBKDF2 driver — returns a hex-encoded derived key.
+ * @param   {string}     secret
+ * @param   {string}     context Optional binding context (e.g. username).
+ * @param   {Uint8Array} salt
+ * @returns {Promise<string>}
+ */
+async function deriveKey(secret, context, salt) {
+  const keyMaterial = await crypto.subtle.importKey(
+    'raw',
+    new TextEncoder().encode(secret + PASSWORD_PEPPER + context),
+    { name: 'PBKDF2' },
+    false,
+    ['deriveBits']
+  )
+  const bits = await crypto.subtle.deriveBits(
+    { name: 'PBKDF2', hash: 'SHA-256', salt, iterations: PBKDF2_ITERATIONS },
+    keyMaterial,
+    256
+  )
+  return Array.from(new Uint8Array(bits))
+    .map(byte => byte.toString(16).padStart(2, '0'))
+    .join('')
+}
+
+/**
+ * Hash a secret using PBKDF2-SHA256.  
+ * Output format: `<hex-salt>:<hex-derived-key>`.
+ * @param   {string} secret
+ * @param   {string} [context=''] Extra binding context (e.g. the username).
+ * @returns {Promise<string>}
+ *
+ * @example
+ * const storedHash = await GitHubDB.hashSecret('ghp_myToken')
+ * await db.kv.set('pat_hash', storedHash)
+ * const ok = await GitHubDB.verifySecret('ghp_myToken', storedHash)
+ */
+async function hashSecret(secret, context = '') {
+  const saltBytes = crypto.getRandomValues(new Uint8Array(16))
+  const saltHex   = Array.from(saltBytes)
+    .map(byte => byte.toString(16).padStart(2, '0'))
+    .join('')
+  return `${saltHex}:${await deriveKey(secret, context, saltBytes)}`
+}
+
+/**
+ * Verify a plaintext secret against a hash produced by {@link hashSecret}.  
+ * Uses constant-time comparison to prevent timing attacks.
+ * @param   {string} secret
+ * @param   {string} storedHash   Value returned by `hashSecret`.
+ * @param   {string} [context=''] Must match the context used during hashing.
+ * @returns {Promise<boolean>}
+ */
+async function verifySecret(secret, storedHash, context = '') {
+  const [saltHex, expectedKey] = storedHash.split(':')
+  if (!saltHex || !expectedKey) { return false }
+
+  const saltBytes  = new Uint8Array(saltHex.match(/.{2}/g).map(pair => parseInt(pair, 16)))
+  const candidateKey = await deriveKey(secret, context, saltBytes)
+
+  if (candidateKey.length !== expectedKey.length) { return false }
+
+  let bitDifferences = 0
+  for (let i = 0; i < candidateKey.length; i++) {
+    bitDifferences |= candidateKey.charCodeAt(i) ^ expectedKey.charCodeAt(i)
+  }
+  return bitDifferences === 0
+}
+
+
+// ═══ Concurrency Helpers ══════════════════════════════════════════════════════
+
+/**
+ * Run an async task over each item with at most `limit` tasks in-flight at once.
+ * @template type
+ * @param   {type[]}                  items
+ * @param   {function(type): Promise} taskFn
+ * @param   {number}                  [limit=CONCURRENCY_LIMIT]
+ * @returns {Promise<any[]>}
+ */
+async function runConcurrently(items, taskFn, limit = CONCURRENCY_LIMIT) {
   const results   = []
-  const executing = new Set()
+  const inFlight  = new Set()
+
   for (const item of items) {
     const promise = Promise.resolve().then(() => taskFn(item))
     results.push(promise)
-    executing.add(promise)
-    // Remove from the tracking set when settled (either way).
-    const cleanup = () => executing.delete(promise)
+    inFlight.add(promise)
+
+    const cleanup = () => inFlight.delete(promise)
     promise.then(cleanup, cleanup)
-    if (executing.size >= limit) { await Promise.race(executing) }
+
+    if (inFlight.size >= limit) { await Promise.race(inFlight) }
   }
+
   return Promise.all(results)
 }
 
-/** Retry an async operation on HTTP 409 conflicts (SHA races), up to maxRetries times. */
+/**
+ * Retry an async operation on HTTP 409 (SHA race condition), up to `maxRetries` times.
+ * @param   {function(): Promise} operation
+ * @param   {number}              [maxRetries=MAX_WRITE_RETRIES]
+ * @returns {Promise<any>}
+ */
 async function retryOnConflict(operation, maxRetries = MAX_WRITE_RETRIES) {
   for (let attempt = 0; ; attempt++) {
     try {
@@ -211,136 +403,152 @@ async function retryOnConflict(operation, maxRetries = MAX_WRITE_RETRIES) {
   }
 }
 
-// ─── Token obfuscation (XOR + base64) ────────────────────────────────────────
 
-/** XOR-rotate each character against TOKEN_XOR_KEY. */
-function xorRotate(text) {
-  return Array.from(text)
-    .map((char, i) => String.fromCharCode(char.charCodeAt(0) ^ TOKEN_XOR_KEY.charCodeAt(i % TOKEN_XOR_KEY.length)))
-    .join('')
-}
-
-/** Obfuscate a plain token to a base64+XOR string for safe embedding. */
-function encodeToken(plainToken) {
-  return ENCODE_PREFIX + encodeBase64(xorRotate(plainToken))
-}
-
-// ─── Base64 <-> string helpers ────────────────────────────────────────────────
+// ═══ Permission Helpers ═══════════════════════════════════════════════════════
 
 /**
- * Encode a UTF-8 string to base64.  
- * Works in both Node (Buffer) and browser (btoa).
+ * Returns `true` if `userRoles` satisfies `requiredLevel`.  
+ * Supported levels: `'public'`, `'auth'`, `'admin'`, or any custom role string / array.
+ * @param   {string|string[]} requiredLevel
+ * @param   {string[]}        userRoles
+ * @returns {boolean}
  */
-function encodeBase64(string) {
-  if (typeof Buffer !== 'undefined') { return Buffer.from(string, 'utf-8').toString('base64') }
-  const bytes  = new TextEncoder().encode(string)
-  const chunks = []
-  for (let offset = 0; offset < bytes.length; offset += 8192) {
-    chunks.push(String.fromCharCode.apply(null, bytes.subarray(offset, offset + 8192)))
+function hasRequiredRole(requiredLevel, userRoles) {
+  if (userRoles.includes('admin')) { return true }
+  if (requiredLevel === 'auth')    { return userRoles.length > 0 }
+  const required = Array.isArray(requiredLevel) ? requiredLevel : [requiredLevel]
+  return required.some(role => userRoles.includes(role))
+}
+
+/**
+ * Shared permission gate used by Collection and KeyValueStore.  
+ * Throws DatabaseError 401 or 403 if the current session is insufficient.
+ * @param {string}         subject   Human-readable subject name for error messages.
+ * @param {'read'|'write'} operation
+ * @param {object|null}    rule      Matched `{ read, write }` rule, or null.
+ * @param {SessionState}   session
+ */
+function enforcePermission(subject, operation, rule, session) {
+  const requiredLevel = operation === 'read' ? (rule?.read ?? 'admin') : (rule?.write ?? 'admin')
+
+  // Empty array or 'public' -> anyone may proceed.
+  if (!requiredLevel || requiredLevel === 'public' || (Array.isArray(requiredLevel) && !requiredLevel.length)) {
+    return
   }
-  return btoa(chunks.join(''))
-}
 
-/**
- * Decode a base64 string to UTF-8.  
- * Works in both Node (Buffer) and browser (atob).
- */
-function decodeBase64(base64) {
-  if (typeof Buffer !== 'undefined') { return Buffer.from(base64, 'base64').toString('utf-8') }
-  const binaryString = atob(base64.replace(/\n/g, ''))
-  const bytes        = new Uint8Array(binaryString.length)
-  for (let i = 0; i < binaryString.length; i++) { bytes[i] = binaryString.charCodeAt(i) }
-  return new TextDecoder().decode(bytes)
-}
-
-/** Serialize a value to base64 JSON for the GitHub Contents API. */
-const encodeContent = value => encodeBase64(JSON.stringify(value, null, 2))
-
-/** Deserialize a base64 string returned by the GitHub Contents API. */
-const decodeContent = base64 => JSON.parse(decodeBase64(base64))
-
-// ─── ID generation ────────────────────────────────────────────────────────────
-
-/** Generate a collision-resistant record ID: `<timestamp-base36>-<random-base36>`. */
-function generateId() {
-  const timestamp  = Date.now().toString(36)
-  let   randomPart = ''
-  try {
-    randomPart = Array.from(crypto.getRandomValues(new Uint8Array(6)))
-      .map(byte => byte.toString(36).padStart(2, '0')).join('')
-  } catch {
-    randomPart = Math.floor(Math.random() * Number.MAX_SAFE_INTEGER).toString(36).slice(0, 12)
+  if (!session.isLoggedIn) {
+    throw new DatabaseError(`${subject} requires a logged-in user for ${operation} operations`, 401)
   }
-  return `${timestamp}-${randomPart}`
-}
 
-// ─── Cryptographic helpers (PBKDF2) ──────────────────────────────────────────
-
-/** Internal PBKDF2 driver — returns a hex-encoded derived key. */
-async function pbkdf2(secret, context, saltBytes) {
-  const keyMaterial = await crypto.subtle.importKey(
-    'raw',
-    new TextEncoder().encode(secret + PASSWORD_PEPPER + context),
-    { name: 'PBKDF2' },
-    false,
-    ['deriveBits']
-  )
-  const bits = await crypto.subtle.deriveBits(
-    { name: 'PBKDF2', hash: 'SHA-256', salt: saltBytes, iterations: PBKDF2_ITERATIONS },
-    keyMaterial,
-    256
-  )
-  return Array.from(new Uint8Array(bits)).map(byte => byte.toString(16).padStart(2, '0')).join('')
-}
-
-/**
- * Hash a secret using PBKDF2-SHA256.  
- * Output format: `<hex-salt>:<hex-derived-key>`.
- * @param {string} secret
- * @param {string} [context=''] Extra binding context (e.g. username).
- * @returns {Promise<string>}
- */
-async function hashSecret(secret, context = '') {
-  const saltBytes = crypto.getRandomValues(new Uint8Array(16))
-  const saltHex   = Array.from(saltBytes).map(byte => byte.toString(16).padStart(2, '0')).join('')
-  return `${saltHex}:${await pbkdf2(secret, context, saltBytes)}`
-}
-
-/**
- * Verify a plaintext secret against a hash produced by {@link hashSecret}.
- * @param {string} secret
- * @param {string} storedHash   Value returned by `hashSecret`.
- * @param {string} [context=''] Must match the context used during hashing.
- * @returns {Promise<boolean>}
- */
-async function verifySecret(secret, storedHash, context = '') {
-  const [saltHex, expected] = storedHash.split(':')
-  if (!saltHex || !expected) { return false }
-  const saltBytes = new Uint8Array(saltHex.match(/.{2}/g).map(pair => parseInt(pair, 16)))
-  const candidate = await pbkdf2(secret, context, saltBytes)
-  // Constant-time comparison to prevent timing attacks.
-  if (candidate.length !== expected.length) { return false }
-  let bitDiff = 0
-  for (let i = 0; i < candidate.length; i++) {
-    bitDiff |= candidate.charCodeAt(i) ^ expected.charCodeAt(i)
+  const userRoles = session.currentUser?.roles ?? []
+  if (!hasRequiredRole(requiredLevel, userRoles)) {
+    const humanRequired = Array.isArray(requiredLevel) ? requiredLevel.join(' or ') : requiredLevel
+    throw new DatabaseError(`${subject} requires "${humanRequired}" role for ${operation} operations`, 403)
   }
-  return bitDiff === 0
 }
 
-// ─── Session state ────────────────────────────────────────────────────────────
+
+// ═══ Polling / Subscribe Utility ══════════════════════════════════════════════
+
+/**
+ * Generic polling subscription used by both {@link Collection} and {@link KeyValueStore}.
+ * Calls `callback` immediately on first poll, then again on any data change.
+ *
+ * @param   {object}                                                  options
+ * @param   {function(): Promise<object[]>}                           options.listEntries       Return raw directory entries for the target path.
+ * @param   {function(string): Promise<any>}                          options.fetchRecord       Fetch a single record / value by its ID or key.
+ * @param   {function(object): string|null}                           options.entryToId         Map a directory entry to its logical ID (null to skip the entry).
+ * @param   {function({ records, added, changed, removed }): void}    options.callback
+ * @param   {number}                                                  [options.intervalMs=5000]
+ * @param   {function(Error): void}                                   [options.onError]
+ * @returns {function(): void}                                                                  A stop function — call it to cancel polling.
+ */
+function subscribeToDirectory({ listEntries, fetchRecord, entryToId, callback, intervalMs = 5000, onError = null }) {
+  const knownShas   = new Map() // id -> sha from last successful poll
+  const cachedData  = new Map() // id -> record / value
+  let   isPolling   = false
+  let   initialized = false
+
+  const poll = async () => {
+    if (isPolling) { return }
+    isPolling = true
+
+    try {
+      const dirEntries  = await listEntries()
+      const currentShas = new Map(
+        dirEntries
+          .map(entry => { const id = entryToId(entry); return id ? [id, entry.sha] : null })
+          .filter(Boolean)
+      )
+
+      const toFetch    = [...currentShas.keys()].filter(id => knownShas.get(id) !== currentShas.get(id))
+      const deletedIds = [...knownShas.keys()].filter(id => !currentShas.has(id))
+      const hasChanges = toFetch.length > 0 || deletedIds.length > 0 || !initialized
+
+      if (hasChanges) {
+        const added   = []
+        const changed = []
+
+        if (toFetch.length > 0) {
+          const fetched = await runConcurrently(toFetch, id => fetchRecord(id))
+          fetched.forEach((record, index) => {
+            if (record == null) { return }
+            const id = toFetch[index]
+            if (!knownShas.has(id)) { added.push(record) }
+            else                    { changed.push(record) }
+            cachedData.set(id, record)
+          })
+        }
+
+        const removedIds = deletedIds.filter(id => cachedData.has(id))
+        removedIds.forEach(id => cachedData.delete(id))
+
+        knownShas.clear()
+        currentShas.forEach((sha, id) => knownShas.set(id, sha))
+
+        callback({
+          records: Array.from(cachedData.values()),
+          added,
+          changed,
+          removed: removedIds,
+        })
+      }
+    } catch (error) {
+      if (onError) { onError(error) }
+    } finally {
+      initialized = true
+      isPolling   = false
+    }
+  }
+
+  poll()
+  const intervalId = setInterval(poll, intervalMs)
+  return () => clearInterval(intervalId)
+}
+
+
+// ═══ Session State ════════════════════════════════════════════════════════════
 
 /**
  * Manages in-memory and sessionStorage login state.  
- * Session expires after SESSION_LIFETIME_MS (8 hours).
+ * Sessions expire after SESSION_LIFETIME_MS (8 hours).  
+ * An optional `storage` dependency can be injected for SSR compatibility.
  */
 class SessionState {
-  constructor() {
+  /**
+   * @param {{ getItem(key: string): string|null, setItem(key: string, value: string): void, removeItem(key: string): void }|null} [storage]
+   */
+  constructor(storage = null) {
     this.activeUser = null
-    this.store      = typeof globalThis !== 'undefined' && globalThis.sessionStorage
-      ? globalThis.sessionStorage
-      : new Map()
+
+    this.store = storage
+      ?? (typeof globalThis !== 'undefined' && globalThis.sessionStorage)
+      ?? new Map()
+
     this.restoreSession()
   }
+
+  // ══ Storage Adapters ══════════════════════════════════════════════════════════
 
   storageGet(key) {
     try {
@@ -353,17 +561,20 @@ class SessionState {
   storageSet(key, value) {
     try {
       if (typeof this.store.setItem === 'function') { this.store.setItem(key, value) }
-      else { this.store.set(key, value) }
+      else                                          { this.store.set(key, value) }
     } catch {}
   }
 
   storageDelete(key) {
     try {
       if (typeof this.store.removeItem === 'function') { this.store.removeItem(key) }
-      else { this.store.delete(key) }
+      else                                             { this.store.delete(key) }
     } catch {}
   }
 
+  // ══ Session Lifecycle ═════════════════════════════════════════════════════════
+
+  /** Restore a previously persisted session, discarding it if expired. */
   restoreSession() {
     try {
       const raw = this.storageGet(SESSION_STORAGE_KEY)
@@ -385,41 +596,49 @@ class SessionState {
    */
   persistUser(user) {
     this.activeUser = user
-    this.storageSet(SESSION_STORAGE_KEY, JSON.stringify({ user, expiresAt: Date.now() + SESSION_LIFETIME_MS }))
+    this.storageSet(
+      SESSION_STORAGE_KEY,
+      JSON.stringify({ user, expiresAt: Date.now() + SESSION_LIFETIME_MS })
+    )
   }
 
-  /** Remove all session data. */
+  /** Clear all session data. */
   clearSession() {
     this.activeUser = null
     this.storageDelete(SESSION_STORAGE_KEY)
   }
 
-  /** The currently logged-in user, or null. */
+  /** The currently logged-in user, or `null`. */
   get currentUser() { return this.activeUser }
 
-  /** True if a user is currently logged in. */
-  get isLoggedIn()  { return !!this.activeUser }
+  /** `true` if a user is currently logged in. */
+  get isLoggedIn()  { return this.activeUser !== null }
 }
 
-// ─── GitHub filesystem layer ──────────────────────────────────────────────────
 
-/** Low-level wrapper around the GitHub Contents API. */
+// ═══ GitHub Filesystem Layer ══════════════════════════════════════════════════
+
+/** Low-level wrapper around the GitHub Contents API and jsDelivr CDN. */
 class GitHubFilesystem {
   /**
    * @param {object} config
    * @param {string} config.owner
    * @param {string} config.repo
-   * @param {string} config.token           Personal Access Token with repo scope.
-   * @param {string} [config.branch='main']
+   * @param {string} config.token                A GitHub PAT with content read/write and metadata/commits read scopes.
+   * @param {string} [config.ghBranch='main']    Branch used for API reads/writes.
+   * @param {string} [config.cdnBranch='master'] Branch used for CDN reads/purges.
    */
-  constructor({ owner, repo, token, branch = 'main' }) {
-    this.owner     = owner
-    this.repo      = repo
-    this.branch    = branch
-    this.token     = token
+  constructor({ owner, repo, token, ghBranch = 'main', cdnBranch = 'master' }) {
+    this.owner      = owner
+    this.repo       = repo
+    this.token      = token
+    this.ghBranch   = ghBranch
+    this.cdnBranch  = cdnBranch
     /** ETag cache for directory listings: path -> { etag, data } */
-    this.etagCache = new Map()
+    this.etagCache  = new Map()
   }
+
+  // ══ Request Helpers ═══════════════════════════════════════════════════════════
 
   get authHeaders() {
     return {
@@ -430,8 +649,8 @@ class GitHubFilesystem {
     }
   }
 
-  contentsUrl(path) {
-    return `${GITHUB_API_BASE}/repos/${this.owner}/${this.repo}/contents/${path}`
+  contentsUrl(filePath) {
+    return `${GITHUB_API_BASE}/repos/${this.owner}/${this.repo}/contents/${filePath}`
   }
 
   async throwApiError(response, fallbackMessage) {
@@ -439,24 +658,28 @@ class GitHubFilesystem {
     throw new DatabaseError(body.message || fallbackMessage, response.status)
   }
 
-  throwRateLimit(response) {
-    const reset = response.headers.get('x-ratelimit-reset')
-    const when  = reset ? ` Resets at ${new Date(Number(reset) * 1000).toISOString()}.` : ''
-    throw new DatabaseError(`GitHub API rate limit exceeded.${when}`, 429)
+  throwRateLimitError(response) {
+    const resetTimestamp = response.headers.get('x-ratelimit-reset')
+    const resetMessage   = resetTimestamp
+      ? ` Resets at ${new Date(Number(resetTimestamp) * 1000).toISOString()}.`
+      : ''
+    throw new DatabaseError(`GitHub API rate limit exceeded.${resetMessage}`, 429)
   }
+
+  isRateLimited(response) {
+    return response.status === 429
+      || (response.status  === 403 && response.headers.get('x-ratelimit-remaining') === '0')
+  }
+
+  // ══ CDN Operations ════════════════════════════════════════════════════════════
 
   /**
-   * Purge a file from the jsDelivr CDN cache after a write or delete.  
-   * @param {string} filePath
+   * Read a JSON file via the jsDelivr CDN.
+   * @param   {string} filePath
+   * @returns {Promise<object|null>}
    */
-  purgeCDNFile(filePath) {
-    const url = `${JSDELIVR_PURGE_BASE}/${this.owner}/${this.repo}@${this.branch}/${filePath}`
-    fetch(url).catch(() => {})
-  }
-
-  /** Read any JSON file via the jsDelivr CDN. Returns null for 404. */
-  async readCDNFile(path) {
-    const url      = `${JSDELIVR_RAW_BASE}/${this.owner}/${this.repo}@${this.branch}/${path}`
+  async readCDNFile(filePath) {
+    const url      = `${JSDELIVR_CDN_BASE}/${this.owner}/${this.repo}@${this.cdnBranch}/${filePath}`
     const response = await fetch(url)
     if (response.status === 404) { return null }
     if (!response.ok) { throw new DatabaseError(`CDN read failed (${response.status})`, response.status) }
@@ -464,61 +687,100 @@ class GitHubFilesystem {
   }
 
   /**
-   * Read a file from the repo.  
-   * Returns `null` for 404, or `{ content, sha }` for an existing file.
+   * Purge a file from the jsDelivr CDN after a write or delete.
+   * @param   {string} filePath
+   * @returns {Promise<void>}
    */
-  async readFile(path) {
-    const response = await fetch(`${this.contentsUrl(path)}?ref=${this.branch}`, { headers: this.authHeaders })
-    if (response.status === 404) { return null }
-    if (response.status === 429 || (response.status === 403 && response.headers.get('x-ratelimit-remaining') === '0')) {
-      this.throwRateLimit(response)
+  async purgeCDNFile(filePath) {
+    const url = `${JSDELIVR_PURGE_BASE}/${this.owner}/${this.repo}@${this.cdnBranch}/${filePath}`
+    try {
+      await fetch(url)
+    } catch (error) {
+      console.warn('[GitHubDB] CDN purge failed for', filePath, error)
     }
-    if (!response.ok) { await this.throwApiError(response, `Read failed (${response.status})`) }
-    const data = await response.json()
-    // The Contents API returns an array when the path is a directory.
-    if (Array.isArray(data)) { return null }
-    return { content: decodeContent(data.content), sha: data.sha }
   }
 
-  /** Write (create or update) a JSON file in the repo. */
-  async writeFile(path, content, commitMessage, fileSha) {
-    const body = { message: commitMessage, content: encodeContent(content), branch: this.branch }
-    if (fileSha) { body.sha = fileSha }
-    const response = await fetch(this.contentsUrl(path), {
-      method: 'PUT',
+  // ══ File Operations ═══════════════════════════════════════════════════════════
+
+  /**
+   * Read a JSON file from the repo via the GitHub API.  
+   * Returns `null` for 404, or `{ content, sha }` for an existing file.
+   * @param   {string} filePath
+   * @returns {Promise<{ content: object, sha: string }|null>}
+   */
+  async readFile(filePath) {
+    const response = await fetch(`${this.contentsUrl(filePath)}?ref=${this.ghBranch}`, {
       headers: this.authHeaders,
-      body: JSON.stringify(body),
     })
+
+    if (response.status === 404)    { return null }
+    if (this.isRateLimited(response)) { this.throwRateLimitError(response) }
+    if (!response.ok) { await this.throwApiError(response, `Read failed (${response.status})`) }
+
+    const data = await response.json()
+    if (Array.isArray(data)) { return null } // path is a directory
+    return { content: decodeFileContent(data.content), sha: data.sha }
+  }
+
+  /**
+   * Write (create or update) a JSON file in the repo.
+   * @param   {string} filePath
+   * @param   {object} content
+   * @param   {string} commitMessage
+   * @param   {string} [existingSha] Required when updating an existing file.
+   * @returns {Promise<object>}      GitHub API response.
+   */
+  async writeFile(filePath, content, commitMessage, existingSha) {
+    const body = {
+      message: commitMessage,
+      content: encodeFileContent(content),
+      branch:  this.ghBranch,
+    }
+    if (existingSha) { body.sha = existingSha }
+
+    const response = await fetch(this.contentsUrl(filePath), {
+      method:  'PUT',
+      headers: this.authHeaders,
+      body:    JSON.stringify(body),
+    })
+
     if (!response.ok) { await this.throwApiError(response, `Write failed (${response.status})`) }
     const result = await response.json()
-    this.purgeCDNFile(path)
+    await this.purgeCDNFile(filePath)
     return result
   }
 
   /**
    * Delete a file from the repo.  
-   * Returns `false` if the file did not exist.
+   * Returns `false` if the file did not exist, `true` on success.
+   * @param   {string} filePath
+   * @param   {string} commitMessage
+   * @returns {Promise<boolean>}
    */
-  async deleteFile(path, commitMessage) {
-    const existing = await this.readFile(path)
+  async deleteFile(filePath, commitMessage) {
+    const existing = await this.readFile(filePath)
     if (!existing) { return false }
-    const response = await fetch(this.contentsUrl(path), {
-      method: 'DELETE',
+
+    const response = await fetch(this.contentsUrl(filePath), {
+      method:  'DELETE',
       headers: this.authHeaders,
-      body: JSON.stringify({ message: commitMessage, sha: existing.sha, branch: this.branch }),
+      body:    JSON.stringify({ message: commitMessage, sha: existing.sha, branch: this.ghBranch }),
     })
+
     if (!response.ok) { await this.throwApiError(response, `Delete failed (${response.status})`) }
-    this.purgeCDNFile(path)
+    await this.purgeCDNFile(filePath)
     return true
   }
 
   /**
-   * List direct children of a directory.  
-   * Uses ETags to avoid redundant API calls.  
+   * List the direct children of a directory.  
+   * Uses ETags to avoid redundant API calls on unchanged directories.  
    * Returns an empty array if the directory does not exist.
+   * @param   {string} dirPath
+   * @returns {Promise<object[]>}
    */
   async listDirectory(dirPath) {
-    const url            = `${this.contentsUrl(dirPath)}?ref=${this.branch}`
+    const url            = `${this.contentsUrl(dirPath)}?ref=${this.ghBranch}`
     const cached         = this.etagCache.get(dirPath)
     const requestHeaders = { ...this.authHeaders }
     if (cached?.etag) { requestHeaders['If-None-Match'] = cached.etag }
@@ -527,9 +789,7 @@ class GitHubFilesystem {
 
     if (response.status === 304) { return cached.data }
     if (response.status === 404) { return [] }
-    if (response.status === 429 || (response.status === 403 && response.headers.get('x-ratelimit-remaining') === '0')) {
-      this.throwRateLimit(response)
-    }
+    if (this.isRateLimited(response)) { this.throwRateLimitError(response) }
     if (!response.ok) { await this.throwApiError(response, `List failed (${response.status})`) }
 
     const data = await response.json()
@@ -540,20 +800,28 @@ class GitHubFilesystem {
     return data
   }
 
+  // ══ Audit & Health ════════════════════════════════════════════════════════════
+
   /**
-   * Fetch the git commit history for a path.
+   * Fetch the git commit history for a given path.  
+   * Every write through this library creates a commit you can inspect here.
    * @param   {string} [path='']
    * @param   {number} [limit=30]
-   * @returns {Promise<Array<{ sha, message, author, date, url }>>}
+   * @returns {Promise<Array<{ sha: string, message: string, author: string, date: string, url: string }>>}
    */
   async getCommitHistory(path = '', limit = 30) {
-    const params = new URLSearchParams({ per_page: limit.toString(), sha: this.branch })
+    const params = new URLSearchParams({ per_page: limit.toString(), sha: this.ghBranch })
     if (path) { params.set('path', path) }
+
     const response = await fetch(
       `${GITHUB_API_BASE}/repos/${this.owner}/${this.repo}/commits?${params}`,
       { headers: this.authHeaders }
     )
-    if (!response.ok) { throw new DatabaseError(`Could not fetch commits (${response.status})`, response.status) }
+
+    if (!response.ok) {
+      throw new DatabaseError(`Could not fetch commits (${response.status})`, response.status)
+    }
+
     return (await response.json()).map(commit => ({
       sha:     commit.sha,
       message: commit.commit.message,
@@ -564,7 +832,7 @@ class GitHubFilesystem {
   }
 
   /**
-   * Verify that the token has access to the repository.
+   * Verify that the configured token has access to the repository.  
    * @returns {Promise<object>} GitHub repo metadata.
    */
   async validateConnection() {
@@ -582,75 +850,44 @@ class GitHubFilesystem {
   }
 }
 
-// ─── Permission helpers ───────────────────────────────────────────────────────
+
+// ═══ Collection ═══════════════════════════════════════════════════════════════
 
 /**
- * Returns true if `userRoles` satisfies `requiredLevel`.  
- * Supported levels: 'public', 'auth', 'admin', or any custom role string / array of strings.  
- */
-function hasRequiredRole(requiredLevel, userRoles) {
-  if (userRoles.includes('admin')) { return true }
-  if (requiredLevel === 'auth')    { return userRoles.length > 0 }
-  const required = Array.isArray(requiredLevel) ? requiredLevel : [requiredLevel]
-  return required.some(role => userRoles.includes(role))
-}
-
-/**
- * Shared permission gate used by Collection and KeyValueStore.
- * @param {string}       subject   Human-readable subject name for error messages.
- * @param {string}       operation 'read' or 'write'.
- * @param {object|null}  rule      The matched `{ read, write }` rule, or null.
- * @param {SessionState} session
- */
-function enforcePermission(subject, operation, rule, session) {
-  const requiredLevel = operation === 'read' ? (rule?.read ?? 'admin') : (rule?.write ?? 'admin')
-  // An empty-array requiredLevel or 'public' means anyone may proceed.
-  if (!requiredLevel || requiredLevel === 'public' || (Array.isArray(requiredLevel) && !requiredLevel.length)) { return }
-  if (!session.isLoggedIn) {
-    throw new DatabaseError(`${subject} requires a logged-in user for ${operation} operations`, 401)
-  }
-  const userRoles = session.currentUser?.roles ?? []
-  if (!hasRequiredRole(requiredLevel, userRoles)) {
-    const required = Array.isArray(requiredLevel) ? requiredLevel.join(' or ') : requiredLevel
-    throw new DatabaseError(`${subject} requires "${required}" role for ${operation} operations`, 403)
-  }
-}
-
-// ─── Collection ───────────────────────────────────────────────────────────────
-
-/**
- * A named collection of JSON records.  
- * Each record is stored as `<collectionPath>/<id>.json`.
- *
- * Obtain via `db.collection('name')`.
+ * A named collection of JSON records, each stored at `<collectionPath>/<id>.json`.  
+ * Obtain an instance via `db.collection('name')`.
  */
 class Collection {
   /**
    * @param {GitHubFilesystem}        filesystem
-   * @param {string}                  collectionPath Full path within the repo (e.g. `data/posts`).
+   * @param {string}                  collectionPath Full repo path (e.g. `data/posts`).
    * @param {string}                  collectionName Leaf collection name, used in permission lookups.
-   * @param {SessionState}            sessionState
+   * @param {SessionState}            session
    * @param {function(): object|null} getPermissions Returns the current permissions map.
    * @param {boolean}                 [useCDN=true]
    */
-  constructor(filesystem, collectionPath, collectionName, sessionState, getPermissions, useCDN = true) {
+  constructor(filesystem, collectionPath, collectionName, session, getPermissions, useCDN = true) {
     this.filesystem     = filesystem
-    this.name           = collectionName
     this.collectionPath = collectionPath
-    this.session        = sessionState
+    this.name           = collectionName
+    this.session        = session
     this.getPermissions = typeof getPermissions === 'function' ? getPermissions : () => getPermissions
     this.useCDN         = useCDN
   }
 
+  // ══ Internal Helpers ══════════════════════════════════════════════════════════
+
   /** Returns the full file path for a given record ID. */
-  filePath(id) {
+  filePathForId(id) {
     assertValidId(id)
     return `${this.collectionPath}/${id}.json`
   }
 
   /**
-   * Check that the current session has the given permission on this collection.  
+   * Enforce the required permission for this collection.  
    * Pass a `recordId` to also consider per-record permission overrides.
+   * @param {'read'|'write'} operation
+   * @param {string|null}    [recordId]
    */
   checkPermission(operation, recordId = null) {
     const perms = this.getPermissions()
@@ -660,18 +897,22 @@ class Collection {
   }
 
   /**
-   * Attach `createdAt` and `updatedAt` timestamps to `data`.  
-   * Preserves `createdAt` from `existing` when updating.
+   * Attach `createdAt` / `updatedAt` timestamps to `data`.  
+   * Preserves the original `createdAt` from `existingRecord` when updating.
+   * @param   {object}      data
+   * @param   {object|null} [existingRecord]
+   * @returns {object}
    */
-  withTimestamps(data, existing = null) {
+  withTimestamps(data, existingRecord = null) {
     const now = new Date().toISOString()
-    return { ...data, createdAt: existing ? existing.createdAt : now, updatedAt: now }
+    return { ...data, createdAt: existingRecord ? existingRecord.createdAt : now, updatedAt: now }
   }
 
-  // ── CRUD ──────────────────────────────────────────────────────────
+  // ══ CRUD ══════════════════════════════════════════════════════════════════════
 
   /**
-   * Create a new record. `id`, `createdAt`, and `updatedAt` are added automatically.  
+   * Create a new record.  
+   * `id`, `createdAt`, and `updatedAt` are added automatically.  
    * Supply `data.id` to use a specific ID; otherwise one is generated.
    * @param   {object} data
    * @returns {Promise<object>}
@@ -680,10 +921,9 @@ class Collection {
     this.checkPermission('write')
     const id = data.id ?? generateId()
     assertValidId(id)
-    const copy = { ...data }
-    delete copy.id
-    const record = { id, ...this.withTimestamps(copy) }
-    await this.filesystem.writeFile(this.filePath(id), record, `${this.name}: add ${id}`)
+    const { id: _stripped, ...rest } = data
+    const record = { id, ...this.withTimestamps(rest) }
+    await this.filesystem.writeFile(this.filePathForId(id), record, `${this.name}: add ${id}`)
     return record
   }
 
@@ -694,24 +934,30 @@ class Collection {
    */
   async get(id) {
     this.checkPermission('read', id)
-    if (this.useCDN) { return this.filesystem.readCDNFile(this.filePath(id)) }
-    const file = await this.filesystem.readFile(this.filePath(id))
+    if (this.useCDN) { return this.filesystem.readCDNFile(this.filePathForId(id)) }
+    const file = await this.filesystem.readFile(this.filePathForId(id))
     return file ? file.content : null
   }
 
   /**
-   * Fetch all records in the collection.
+   * Fetch all records in the collection, with optional pagination.
+   * @param   {{ limit?: number, offset?: number }} [options]
    * @returns {Promise<object[]>}
    */
-  async list() {
+  async list({ limit, offset = 0 } = {}) {
     this.checkPermission('read')
-    const entries = (await this.filesystem.listDirectory(this.collectionPath))
-      .filter(entry => entry.name.endsWith('.json') && entry.type === 'file')
-    const records = await runWithConcurrency(entries, async entry => {
+    let entries = (await this.filesystem.listDirectory(this.collectionPath))
+      .filter(entry => entry.type === 'file' && entry.name.endsWith('.json') && !entry.name.startsWith('_'))
+
+    if (offset > 0)                          { entries = entries.slice(offset) }
+    if (Number.isInteger(limit) && limit > 0) { entries = entries.slice(0, limit) }
+
+    const records = await runConcurrently(entries, async entry => {
       if (this.useCDN) { return this.filesystem.readCDNFile(`${this.collectionPath}/${entry.name}`) }
       const file = await this.filesystem.readFile(`${this.collectionPath}/${entry.name}`)
       return file ? file.content : null
-    }, 10)
+    })
+
     return records.filter(Boolean)
   }
 
@@ -728,13 +974,11 @@ class Collection {
       throw new DatabaseError('Changes must be a plain object', 400)
     }
     return retryOnConflict(async () => {
-      const file = await this.filesystem.readFile(this.filePath(id))
+      const file = await this.filesystem.readFile(this.filePathForId(id))
       if (!file) { throw new DatabaseError(`Record not found: ${id}`, 404) }
-      const safeChanges = { ...changes }
-      delete safeChanges.id
-      delete safeChanges.createdAt
+      const { id: _id, createdAt: _createdAt, ...safeChanges } = changes
       const updated = { ...file.content, ...safeChanges, id, updatedAt: new Date().toISOString() }
-      await this.filesystem.writeFile(this.filePath(id), updated, `${this.name}: update ${id}`, file.sha)
+      await this.filesystem.writeFile(this.filePathForId(id), updated, `${this.name}: update ${id}`, file.sha)
       return updated
     })
   }
@@ -749,10 +993,10 @@ class Collection {
   async replace(id, data) {
     this.checkPermission('write', id)
     return retryOnConflict(async () => {
-      const file = await this.filesystem.readFile(this.filePath(id))
+      const file = await this.filesystem.readFile(this.filePathForId(id))
       if (!file) { throw new DatabaseError(`Record not found: ${id}`, 404) }
       const record = { id, ...this.withTimestamps(data, file.content) }
-      await this.filesystem.writeFile(this.filePath(id), record, `${this.name}: replace ${id}`, file.sha)
+      await this.filesystem.writeFile(this.filePathForId(id), record, `${this.name}: replace ${id}`, file.sha)
       return record
     })
   }
@@ -764,12 +1008,12 @@ class Collection {
    */
   async remove(id) {
     this.checkPermission('write', id)
-    const deleted = await this.filesystem.deleteFile(this.filePath(id), `${this.name}: remove ${id}`)
+    const deleted = await this.filesystem.deleteFile(this.filePathForId(id), `${this.name}: remove ${id}`)
     return { id, deleted }
   }
 
   /**
-   * Update the record if it exists; create it with the given `id` if not.
+   * Update the record if it exists; create it with the given `id` if it does not.
    * @param   {string} id
    * @param   {object} data
    * @returns {Promise<object>}
@@ -777,46 +1021,77 @@ class Collection {
   async upsert(id, data) {
     this.checkPermission('write', id)
     return retryOnConflict(async () => {
-      const file = await this.filesystem.readFile(this.filePath(id))
+      const file = await this.filesystem.readFile(this.filePathForId(id))
+
       if (file) {
-        const safeChanges = { ...data }
-        delete safeChanges.id
-        delete safeChanges.createdAt
+        const { id: _id, createdAt: _createdAt, ...safeChanges } = data
         const updated = { ...file.content, ...safeChanges, id, updatedAt: new Date().toISOString() }
-        await this.filesystem.writeFile(this.filePath(id), updated, `${this.name}: upsert ${id}`, file.sha)
+        await this.filesystem.writeFile(this.filePathForId(id), updated, `${this.name}: upsert ${id}`, file.sha)
         return updated
       }
-      const copy = { ...data }
-      delete copy.id
-      const record = { id, ...this.withTimestamps(copy) }
-      await this.filesystem.writeFile(this.filePath(id), record, `${this.name}: upsert (create) ${id}`)
+
+      const { id: _stripped, ...rest } = data
+      const record = { id, ...this.withTimestamps(rest) }
+      await this.filesystem.writeFile(this.filePathForId(id), record, `${this.name}: upsert (create) ${id}`)
       return record
     })
   }
 
-  // ── Query helpers ─────────────────────────────────────────────────
+  // ══ Query ═════════════════════════════════════════════════════════════════════
 
   /**
-   * Filter all records in memory using a predicate function.
-   * @param   {function(object): boolean}  filterFn
-   * @param   {{ sort?, limit?, offset? }} [options]
+   * Filter all records using an in-memory predicate function, with optional sort / pagination.
+   * @param   {function(object): boolean}                            filterFn
+   * @param   {{ sort?: function, limit?: number, offset?: number }} [options]
    * @returns {Promise<object[]>}
    */
   async query(filterFn, { sort, limit, offset = 0 } = {}) {
-    let results = (await this.list()).filter(filterFn)
-    if (sort)                                 { results = results.sort(sort) }
-    if (offset)                               { results = results.slice(offset) }
-    if (Number.isInteger(limit) && limit > 0) { results = results.slice(0, limit) }
+    if (sort) {
+      let results = (await this.list()).filter(filterFn).sort(sort)
+      if (offset > 0)                               { results = results.slice(offset) }
+      if (Number.isInteger(limit) && limit > 0)     { results = results.slice(0, limit) }
+      return results
+    }
+
+    const results      = []
+    let   batchOffset  = 0
+    let   skipped      = 0
+
+    while (true) {
+      const batch = await this.list({ limit: QUERY_BATCH_SIZE, offset: batchOffset })
+      if (batch.length === 0) { break }
+
+      for (const record of batch) {
+        if (!filterFn(record)) { continue }
+        if (skipped < offset) { skipped++; continue }
+        results.push(record)
+        if (Number.isInteger(limit) && results.length >= limit) { return results }
+      }
+
+      batchOffset += QUERY_BATCH_SIZE
+      if (batch.length < QUERY_BATCH_SIZE) { break }
+    }
+
     return results
   }
 
   /**
-   * Return the first record matching the predicate, or `null`.
+   * Return the first record matching the predicate, or `null` if none match.
    * @param   {function(object): boolean} filterFn
    * @returns {Promise<object|null>}
    */
   async findOne(filterFn) {
-    return (await this.list()).find(filterFn) ?? null
+    let batchOffset = 0
+
+    while (true) {
+      const batch = await this.list({ limit: QUERY_BATCH_SIZE, offset: batchOffset })
+      if (batch.length === 0) { return null }
+
+      const match = batch.find(filterFn)
+      if (match) { return match }
+
+      batchOffset += QUERY_BATCH_SIZE
+    }
   }
 
   /**
@@ -825,8 +1100,12 @@ class Collection {
    * @returns {Promise<number>}
    */
   async count(filterFn = null) {
-    const allRecords = await this.list()
-    return filterFn ? allRecords.filter(filterFn).length : allRecords.length
+    this.checkPermission('read')
+    if (!filterFn) {
+      const entries = await this.filesystem.listDirectory(this.collectionPath)
+      return entries.filter(entry => entry.type === 'file' && entry.name.endsWith('.json')).length
+    }
+    return (await this.list()).filter(filterFn).length
   }
 
   /**
@@ -836,10 +1115,10 @@ class Collection {
    */
   async exists(id) {
     this.checkPermission('read', id)
-    return !!(await this.filesystem.readFile(this.filePath(id)))
+    return !!(await this.filesystem.readFile(this.filePathForId(id)))
   }
 
-  // ── Bulk operations ───────────────────────────────────────────────
+  // ══ Bulk Operations ═══════════════════════════════════════════════════════════
 
   /**
    * Add multiple records in parallel.
@@ -848,15 +1127,14 @@ class Collection {
    */
   async bulkAdd(items) {
     this.checkPermission('write')
-    return runWithConcurrency(items, async item => {
+    return runConcurrently(items, async item => {
       const id = item.id ?? generateId()
       assertValidId(id)
-      const copy = { ...item }
-      delete copy.id
-      const record = { id, ...this.withTimestamps(copy) }
-      return this.filesystem.writeFile(this.filePath(id), record, `${this.name}: add ${id}`)
-        .then(() => record)
-    }, 10)
+      const { id: _stripped, ...rest } = item
+      const record = { id, ...this.withTimestamps(rest) }
+      await this.filesystem.writeFile(this.filePathForId(id), record, `${this.name}: add ${id}`)
+      return record
+    })
   }
 
   /**
@@ -866,108 +1144,64 @@ class Collection {
    */
   async bulkRemove(ids) {
     this.checkPermission('write')
-    return runWithConcurrency(ids, async id => {
-      const deleted = await this.filesystem.deleteFile(this.filePath(id), `${this.name}: remove ${id}`)
+    return runConcurrently(ids, async id => {
+      const deleted = await this.filesystem.deleteFile(this.filePathForId(id), `${this.name}: remove ${id}`)
       return { id, deleted }
-    }, 10)
+    })
   }
 
   /**
-   * Delete every record in the collection. Irreversible.
+   * Delete every record in the collection.
    * @returns {Promise<Array<{ id: string, deleted: boolean }>>}
    */
   async clear() {
     this.checkPermission('write')
-    const allRecords = await this.list()
-    return runWithConcurrency(allRecords.map(r => r.id), async id => {
-      const deleted = await this.filesystem.deleteFile(this.filePath(id), `${this.name}: remove ${id}`)
+    const entries = await this.filesystem.listDirectory(this.collectionPath)
+    const ids = entries
+      .filter(entry => entry.type === 'file' && entry.name.endsWith('.json') && !entry.name.startsWith('_'))
+      .map(entry => entry.name.replace(/\.json$/, ''))
+
+    return runConcurrently(ids, async id => {
+      const deleted = await this.filesystem.deleteFile(this.filePathForId(id), `${this.name}: remove ${id}`)
       return { id, deleted }
-    }, 10)
+    })
   }
 
-  // ── Real-time polling ─────────────────────────────────────────────
+  // ══ Polling ═══════════════════════════════════════════════════════════════════
 
   /**
-   * Poll the collection for changes and invoke `callback` with a diff when data changes.
-   * The callback is invoked immediately on the first successful poll and whenever a change is detected.
+   * Poll the collection for changes and invoke `callback` with a diff on each change.
    *
-   * @param   {function({ records, added, changed, removed }): void} callback  
-   *   - `records`  — full current record array  
-   *   - `added`    — records that are new this tick  
-   *   - `changed`  — records that existed but were modified  
-   *   - `removed`  — IDs of records that were deleted
-   * @param   {number}                [intervalMs=5000] Polling interval in milliseconds.
-   * @param   {function(Error): void} [onError]         Called on fetch errors (polling continues).
-   * @returns {function(): void}                        Call to stop polling.
+   * @param   {function({ records: object[], added: object[], changed: object[], removed: string[] }): void} callback
+   * @param   {number}                                                                                       [intervalMs=5000] Polling interval in milliseconds.
+   * @param   {function(Error): void}                                                                        [onError]         Called on fetch errors (polling continues).
+   * @returns {function(): void}                                                                                               Call to stop polling.
    *
    * @example
    * const stop = db.collection('messages').subscribe(({ records, added, removed }) => {
-   *   console.log('current:', records)
-   *   console.log('new:',     added)
-   *   console.log('deleted:', removed)
+   *   console.log('all:', records)
+   *   console.log('new:', added)
+   *   console.log('gone:', removed)
    * })
-   * stop() // cancel
+   * stop()
    */
   subscribe(callback, intervalMs = 5000, onError = null) {
-    const knownShas   = new Map() // id -> sha from last successful poll
-    const recordCache = new Map() // id -> record object
-    let   isPolling   = false
-    let   initialized = false
-
-    const poll = async () => {
-      if (isPolling) { return }
-      isPolling = true
-      try {
-        const dirEntries  = await this.filesystem.listDirectory(this.collectionPath)
-        const entries     = dirEntries.filter(e => e.name.endsWith('.json') && e.type === 'file')
-        const currentShas = new Map(entries.map(e => [e.name.replace(/\.json$/, ''), e.sha]))
-
-        const toFetch = []
-        for (const [id, sha] of currentShas) {
-          if (knownShas.get(id) !== sha) { toFetch.push(id) }
-        }
-        const deletedIds = [...knownShas.keys()].filter(id => !currentShas.has(id))
-
-        const hasChanges = toFetch.length > 0 || deletedIds.length > 0 || !initialized
-
-        if (hasChanges) {
-          const added   = []
-          const changed = []
-
-          if (toFetch.length > 0) {
-            const fetched = await runWithConcurrency(toFetch, id => this.get(id), 10)
-            fetched.forEach((record, index) => {
-              if (!record) { return }
-              const id = toFetch[index]
-              if (!knownShas.has(id)) { added.push(record) }
-              else                    { changed.push(record) }
-              recordCache.set(id, record)
-            })
-          }
-
-          const removedIds = deletedIds.filter(id => recordCache.has(id))
-          removedIds.forEach(id => recordCache.delete(id))
-
-          knownShas.clear()
-          currentShas.forEach((sha, id) => knownShas.set(id, sha))
-
-          callback({ records: Array.from(recordCache.values()), added, changed, removed: removedIds })
-        }
-      } catch (error) {
-        if (onError) { onError(error) }
-      } finally {
-        initialized = true
-        isPolling   = false
-      }
-    }
-
-    poll()
-    const intervalId = setInterval(poll, intervalMs)
-    return () => clearInterval(intervalId)
+    return subscribeToDirectory({
+      listEntries: () => this.filesystem.listDirectory(this.collectionPath),
+      fetchRecord: id  => this.get(id),
+      entryToId:   entry =>
+        entry.type === 'file' && entry.name.endsWith('.json')
+          ? entry.name.replace(/\.json$/, '')
+          : null,
+      callback,
+      intervalMs,
+      onError,
+    })
   }
 }
 
-// ─── Key-Value Store ──────────────────────────────────────────────────────────
+
+// ═══ Key-Value Store ══════════════════════════════════════════════════════════
 
 /**
  * A simple key-value store backed by files at `<basePath>/_kv/<key>.json`.  
@@ -975,11 +1209,11 @@ class Collection {
  */
 class KeyValueStore {
   /**
-   * @param {GitHubFilesystem}           filesystem
-   * @param {string}                     basePath
-   * @param {boolean}                    [useCDN=true]
-   * @param {SessionState|null}          [session=null]
-   * @param {function(): object|null}    [getPermissions=null]
+   * @param {GitHubFilesystem}        filesystem
+   * @param {string}                  basePath
+   * @param {boolean}                 [useCDN=true]
+   * @param {SessionState|null}       [session=null]
+   * @param {function(): object|null} [getPermissions=null]
    */
   constructor(filesystem, basePath, useCDN = true, session = null, getPermissions = null) {
     this.filesystem     = filesystem
@@ -989,7 +1223,9 @@ class KeyValueStore {
     this.getPermissions = getPermissions
   }
 
-  filePath(key) {
+  // ══ Internal Helpers ══════════════════════════════════════════════════════════
+
+  filePathForKey(key) {
     assertValidId(key)
     return `${this.kvPath}/${key}.json`
   }
@@ -1002,6 +1238,8 @@ class KeyValueStore {
     enforcePermission(label, operation, rule, this.session)
   }
 
+  // ══ Public API ════════════════════════════════════════════════════════════════
+
   /**
    * Store a value under `key`.
    * @param   {string}  key
@@ -1011,9 +1249,9 @@ class KeyValueStore {
   async set(key, value) {
     this.checkPermission('write', key)
     return retryOnConflict(async () => {
-      const file = await this.filesystem.readFile(this.filePath(key))
+      const file = await this.filesystem.readFile(this.filePathForKey(key))
       await this.filesystem.writeFile(
-        this.filePath(key),
+        this.filePathForKey(key),
         { key, value, updatedAt: new Date().toISOString() },
         `kv: set ${key}`,
         file?.sha
@@ -1030,10 +1268,10 @@ class KeyValueStore {
   async get(key) {
     this.checkPermission('read', key)
     if (this.useCDN) {
-      const file = await this.filesystem.readCDNFile(this.filePath(key))
+      const file = await this.filesystem.readCDNFile(this.filePathForKey(key))
       return file ? file.value : null
     }
-    const file = await this.filesystem.readFile(this.filePath(key))
+    const file = await this.filesystem.readFile(this.filePathForKey(key))
     return file ? file.content.value : null
   }
 
@@ -1044,7 +1282,7 @@ class KeyValueStore {
    */
   async delete(key) {
     this.checkPermission('write', key)
-    const deleted = await this.filesystem.deleteFile(this.filePath(key), `kv: delete ${key}`)
+    const deleted = await this.filesystem.deleteFile(this.filePathForKey(key), `kv: delete ${key}`)
     return { key, deleted }
   }
 
@@ -1055,11 +1293,11 @@ class KeyValueStore {
    */
   async has(key) {
     this.checkPermission('read', key)
-    return !!(await this.filesystem.readFile(this.filePath(key)))
+    return !!(await this.filesystem.readFile(this.filePathForKey(key)))
   }
 
   /**
-   * Atomically increment a numeric counter (optimistic lock via SHA).  
+   * Atomically increment a numeric counter.  
    * Creates the key with value `by` if it does not yet exist.
    * @param   {string} key
    * @param   {number} [by=1]
@@ -1068,10 +1306,10 @@ class KeyValueStore {
   async increment(key, by = 1) {
     this.checkPermission('write', key)
     return retryOnConflict(async () => {
-      const file     = await this.filesystem.readFile(this.filePath(key))
+      const file     = await this.filesystem.readFile(this.filePathForKey(key))
       const newValue = (file ? Number(file.content.value) : 0) + by
       await this.filesystem.writeFile(
-        this.filePath(key),
+        this.filePathForKey(key),
         { key, value: newValue, updatedAt: new Date().toISOString() },
         `kv: increment ${key}`,
         file?.sha
@@ -1081,15 +1319,15 @@ class KeyValueStore {
   }
 
   /**
-   * Get multiple keys in one call.  
+   * Get multiple keys in a single call.  
    * Accepts spread args — `getMany('a', 'b')` — or a single array — `getMany(['a', 'b'])`.
    * @param   {...string|string[]} args
    * @returns {Promise<{ [key: string]: unknown }>}
    */
   async getMany(...args) {
-    const keys  = args.length === 1 && Array.isArray(args[0]) ? args[0] : args
+    const keys = args.length === 1 && Array.isArray(args[0]) ? args[0] : args
     this.checkPermission('read')
-    const pairs = await runWithConcurrency(keys, async key => [key, await this.get(key)])
+    const pairs = await runConcurrently(keys, async key => [key, await this.get(key)])
     return Object.fromEntries(pairs)
   }
 
@@ -1100,12 +1338,12 @@ class KeyValueStore {
    */
   async setMany(entries) {
     this.checkPermission('write')
-    return runWithConcurrency(Object.entries(entries), ([key, value]) => this.set(key, value))
+    return runConcurrently(Object.entries(entries), ([key, value]) => this.set(key, value))
   }
 
   /**
    * List all user-facing KV entries as a `{ key -> value }` map.  
-   * Internal keys used by the auth system are excluded.
+   * Internal auth-system keys are excluded.
    * @returns {Promise<{ [key: string]: unknown }>}
    */
   async getAll() {
@@ -1113,139 +1351,211 @@ class KeyValueStore {
     const jsonFiles = (await this.filesystem.listDirectory(this.kvPath))
       .filter(entry => {
         if (!entry.name.endsWith('.json')) { return false }
-        const key = entry.name.replace(/\.json$/, '')
-        return !INTERNAL_KV_KEYS.has(key)
+        return !INTERNAL_KV_KEYS.has(entry.name.replace(/\.json$/, ''))
       })
-    const pairs = await runWithConcurrency(jsonFiles, async entry => {
+
+    const pairs = await runConcurrently(jsonFiles, async entry => {
       const key = entry.name.replace(/\.json$/, '')
       return [key, await this.get(key)]
     })
+
     return Object.fromEntries(pairs)
+  }
+
+  // ══ Polling ═══════════════════════════════════════════════════════════════════
+
+  /**
+   * Poll the key-value store for changes and invoke `callback` with a diff on each change.
+   *
+   * @param   {function({ records: object, added: object, changed: object, removed: string[] }): void} callback
+   * @param   {number}                                                                                 [intervalMs=5000] Polling interval in milliseconds.
+   * @param   {function(Error): void}                                                                  [onError]         Called on fetch errors (polling continues).
+   * @returns {function(): void}                                                                                         Call to stop polling.
+   *
+   * @example
+   * const stop = db.kv.subscribe(({ records, added, removed }) => {
+   *   console.log('all:', records)
+   * })
+   * stop()
+   */
+  subscribe(callback, intervalMs = 5000, onError = null) {
+    const wrapCallback = ({ records, added, changed, removed }) => {
+      const pairsToMap = arr => Object.fromEntries(arr.map(([k, v]) => [k, v]))
+      callback({
+        records: pairsToMap(records),
+        added:   pairsToMap(added),
+        changed: pairsToMap(changed),
+        removed,
+      })
+    }
+
+    return subscribeToDirectory({
+      listEntries: () => this.filesystem.listDirectory(this.kvPath),
+      fetchRecord: async key => {
+        const value = await this.get(key)
+        return value != null ? [key, value] : null
+      },
+      entryToId: entry => {
+        if (!entry.name.endsWith('.json')) { return null }
+        const key = entry.name.replace(/\.json$/, '')
+        return INTERNAL_KV_KEYS.has(key) ? null : key
+      },
+      callback:  wrapCallback,
+      intervalMs,
+      onError,
+    })
   }
 }
 
-// ─── Auth Manager ─────────────────────────────────────────────────────────────
+
+// ═══ Auth Manager ═════════════════════════════════════════════════════════════
 
 /**
- * Username/password authentication using JSON files in the repo.  
- * Passwords are stored as PBKDF2-SHA256 hashes (200,000 iterations + per-user salt + global pepper).  
+ * Username / password authentication backed by JSON files in the repo.  
+ * Passwords are stored as PBKDF2-SHA256 hashes (200 000 iterations + per-user salt + global pepper).  
  * Access via `db.auth`.
  */
 class AuthManager {
-  constructor(filesystem, sessionState, basePath = 'data') {
+  /**
+   * @param {GitHubFilesystem} filesystem
+   * @param {SessionState}     session
+   * @param {string}           [basePath='data']
+   */
+  constructor(filesystem, session, basePath = 'data') {
     this.filesystem = filesystem
-    this.session    = sessionState
+    this.session    = session
     this.kvPath     = `${basePath}/_kv`
     this.authPath   = `${basePath}/_auth`
   }
 
-  /** Full file path for a user by their username (lowercased). */
-  userPath(username) { return `${this.authPath}/${username.toLowerCase()}.json` }
+  // ══ Internal Helpers ══════════════════════════════════════════════════════════
+
+  /** Full file path for a user record (username is lowercased). */
+  userFilePath(username) {
+    return `${this.authPath}/${username.toLowerCase()}.json`
+  }
 
   /**
    * Fetch a single user record by username.  
    * Returns `{ user, sha }` or `null` if not found.
+   * @param   {string} username
+   * @returns {Promise<{ user: object, sha: string }|null>}
    */
   async fetchUser(username) {
-    const file = await this.filesystem.readFile(this.userPath(username))
+    const file = await this.filesystem.readFile(this.userFilePath(username))
     return file ? { user: file.content, sha: file.sha } : null
   }
 
-  /** Fetch all user records from the _auth directory. */
+  /** Fetch every user record from the _auth directory. */
   async fetchAllUsers() {
     const entries = (await this.filesystem.listDirectory(this.authPath))
       .filter(entry => entry.name.endsWith('.json'))
-    const records = await runWithConcurrency(entries, async entry => {
-      const record = await this.fetchUser(entry.name.replace(/\.json$/, ''))
-      return record ? record.user : null
+
+    const records = await runConcurrently(entries, async entry => {
+      const result = await this.fetchUser(entry.name.replace(/\.json$/, ''))
+      return result ? result.user : null
     })
+
     return records.filter(Boolean)
   }
 
   /**
-   * Strip sensitive fields (passwordHash) for public exposure.  
-   * Also normalises legacy single-role records that stored `role` instead of `roles`.
+   * Strip sensitive fields from a user record for safe public exposure.
+   * @param   {object} user
+   * @returns {{ id: string, username: string, roles: string[], createdAt: string }}
    */
-  toSafeUser(user) {
-    const roles = Array.isArray(user.roles) ? user.roles : [user.role ?? 'user']
-    return { id: user.id, username: user.username, roles, createdAt: user.createdAt }
+  toPublicUser(user) {
+    return { id: user.id, username: user.username, roles: user.roles, createdAt: user.createdAt }
   }
+
+  // ══ Public API ════════════════════════════════════════════════════════════════
 
   /** The currently logged-in user, or `null`. */
   get currentUser() { return this.session.currentUser }
 
-  /** `true` if a user is logged in. */
-  get isLoggedIn() { return this.session.isLoggedIn }
+  /** `true` if a user is currently logged in. */
+  get isLoggedIn()  { return this.session.isLoggedIn }
 
   /**
    * Validate the active session against live repository data.  
-   * If the user's roles have changed since login the session is refreshed automatically.
+   * If the user's roles have changed since login, the session is refreshed automatically.
    * @returns {Promise<boolean>}
    */
   async verifySession() {
     if (!this.session.isLoggedIn) { return false }
-    const record = await this.fetchUser(this.session.currentUser.username)
-    if (!record) { this.logout(); return false }
-    const storedRoles  = [...(record.user.roles ?? [record.user.role ?? 'user'])].sort().join(',')
+
+    const result = await this.fetchUser(this.session.currentUser.username)
+    if (!result) { this.logout(); return false }
+
+    const storedRoles  = [...(result.user.roles ?? [])].sort().join(',')
     const sessionRoles = [...(this.session.currentUser.roles ?? [])].sort().join(',')
     if (storedRoles !== sessionRoles) {
-      this.session.persistUser(this.toSafeUser(record.user))
+      this.session.persistUser(this.toPublicUser(result.user))
     }
+
     return true
   }
 
   /**
    * Create a new user account.  
-   * The first account is automatically an admin.
-   * @param   {string} username  2–32 alphanumeric characters, hyphens, or underscores.
-   * @param   {string} password  Minimum 8 characters.
+   * The first registered account is automatically an admin.
+   * @param   {string} username 2–32 characters: letters, numbers, hyphens, underscores.
+   * @param   {string} password Minimum 8 characters.
    * @returns {Promise<{ id: string, username: string, roles: string[], createdAt: string }>}
    */
   async register(username, password) {
-    if (!username || !password) { throw new DatabaseError('Username and password are required', 400) }
+    if (!username || !password) {
+      throw new DatabaseError('Username and password are required', 400)
+    }
     if (!/^[a-zA-Z0-9_\-]{2,32}$/.test(username)) {
-      throw new DatabaseError('Username must be 2–32 characters: letters, numbers, hyphens, and underscores only', 400)
+      throw new DatabaseError(
+        'Username must be 2–32 characters: letters, numbers, hyphens, and underscores only', 400
+      )
     }
     if (password.length < MIN_PASSWORD_LENGTH) {
       throw new DatabaseError(`Password must be at least ${MIN_PASSWORD_LENGTH} characters`, 400)
     }
 
-    const existing = await this.filesystem.readFile(this.userPath(username))
+    const existing = await this.filesystem.readFile(this.userFilePath(username))
     if (existing) { throw new DatabaseError('That username is already taken', 409) }
 
     const newUser = await retryOnConflict(async () => {
-      const sentinelPath = `${this.kvPath}/admin-exists.json`
-      const sentinel     = await this.filesystem.readFile(sentinelPath)
-      const isFirstAdmin = !sentinel
+      const adminSentinelPath = `${this.kvPath}/admin-exists.json`
+      const adminSentinel     = await this.filesystem.readFile(adminSentinelPath)
+      const isFirstUser       = !adminSentinel
 
       const user = {
         id:           generateId(),
         username,
         passwordHash: await hashSecret(password, username.toLowerCase()),
         createdAt:    new Date().toISOString(),
-        roles:        isFirstAdmin ? ['admin'] : ['user'],
+        roles:        isFirstUser ? ['admin'] : ['user'],
       }
 
       try {
-        await this.filesystem.writeFile(this.userPath(username), user, `auth: register ${username}`)
+        await this.filesystem.writeFile(this.userFilePath(username), user, `auth: register ${username}`)
       } catch (writeError) {
-        // 422 or 409 means the file already exists — race condition with another register.
+        // 422 or 409 means a concurrent registration claimed the same username.
         if (writeError.httpStatus === 422 || writeError.httpStatus === 409) {
           throw new DatabaseError('That username is already taken', 409)
         }
         throw writeError
       }
 
-      if (isFirstAdmin) {
-        await this.filesystem.writeFile(sentinelPath, { createdAt: user.createdAt }, 'auth: mark first admin')
+      if (isFirstUser) {
+        await this.filesystem.writeFile(
+          adminSentinelPath,
+          { createdAt: user.createdAt },
+          'auth: mark first admin'
+        )
       }
 
       return user
     })
 
-    const safeUser = this.toSafeUser(newUser)
-    this.session.persistUser(safeUser)
-    return safeUser
+    const publicUser = this.toPublicUser(newUser)
+    this.session.persistUser(publicUser)
+    return publicUser
   }
 
   /**
@@ -1255,21 +1565,26 @@ class AuthManager {
    * @returns {Promise<{ id: string, username: string, roles: string[], createdAt: string }>}
    */
   async login(username, password) {
-    if (!username || !password) { throw new DatabaseError('Username and password are required', 400) }
-    const file    = await this.filesystem.readFile(this.userPath(username))
-    const user    = file ? file.content : null
-    const matches = user ? await verifySecret(password, user.passwordHash, username.toLowerCase()) : false
-    if (!user || !matches) { throw new DatabaseError('Invalid username or password', 401) }
-    const safeUser = this.toSafeUser(user)
-    this.session.persistUser(safeUser)
-    return safeUser
+    if (!username || !password) {
+      throw new DatabaseError('Username and password are required', 400)
+    }
+
+    const file       = await this.filesystem.readFile(this.userFilePath(username))
+    const user       = file ? file.content : null
+    const isValidPw  = user ? await verifySecret(password, user.passwordHash, username.toLowerCase()) : false
+
+    if (!user || !isValidPw) { throw new DatabaseError('Invalid username or password', 401) }
+
+    const publicUser = this.toPublicUser(user)
+    this.session.persistUser(publicUser)
+    return publicUser
   }
 
   /** End the current session. */
   logout() { this.session.clearSession() }
 
   /**
-   * Change the password for an account if the current password is correct.
+   * Change the password for an account given the correct current password.
    * @param   {string} username
    * @param   {string} currentPassword
    * @param   {string} newPassword
@@ -1280,18 +1595,23 @@ class AuthManager {
       throw new DatabaseError(`New password must be at least ${MIN_PASSWORD_LENGTH} characters`, 400)
     }
     return retryOnConflict(async () => {
-      const file = await this.filesystem.readFile(this.userPath(username))
+      const file = await this.filesystem.readFile(this.userFilePath(username))
       if (!file) { throw new DatabaseError('User not found', 404) }
-      const user = file.content
-      if (!await verifySecret(currentPassword, user.passwordHash, username.toLowerCase())) {
-        throw new DatabaseError('Incorrect current password', 401)
-      }
+
+      const isValidPw = await verifySecret(currentPassword, file.content.passwordHash, username.toLowerCase())
+      if (!isValidPw) { throw new DatabaseError('Incorrect current password', 401) }
+
       const updated = {
-        ...user,
+        ...file.content,
         passwordHash: await hashSecret(newPassword, username.toLowerCase()),
         updatedAt:    new Date().toISOString(),
       }
-      await this.filesystem.writeFile(this.userPath(username), updated, `auth: change password ${username}`, file.sha)
+      await this.filesystem.writeFile(
+        this.userFilePath(username),
+        updated,
+        `auth: change password ${username}`,
+        file.sha
+      )
       return { ok: true }
     })
   }
@@ -1304,108 +1624,115 @@ class AuthManager {
    * @returns {Promise<{ deleted: true }>}
    */
   async deleteAccount(username, password) {
-    const file = await this.filesystem.readFile(this.userPath(username))
+    const file = await this.filesystem.readFile(this.userFilePath(username))
     if (!file) { throw new DatabaseError('User not found', 404) }
-    const user = file.content
-    if (!await verifySecret(password, user.passwordHash, username.toLowerCase())) {
-      throw new DatabaseError('Incorrect password', 401)
-    }
+
+    const isValidPw = await verifySecret(password, file.content.passwordHash, username.toLowerCase())
+    if (!isValidPw) { throw new DatabaseError('Incorrect password', 401) }
+
     await retryOnConflict(() =>
-      this.filesystem.deleteFile(this.userPath(username), `auth: delete account ${username}`)
+      this.filesystem.deleteFile(this.userFilePath(username), `auth: delete account ${username}`)
     )
+
     if (this.session.currentUser?.username === username) { this.session.clearSession() }
     return { deleted: true }
   }
 
   /**
-   * List all registered users — no password hashes exposed.
+   * List all registered users — no password hashes included.
    * @returns {Promise<Array<{ id: string, username: string, roles: string[], createdAt: string }>>}
    */
   async listUsers() {
-    return (await this.fetchAllUsers()).map(user => this.toSafeUser(user))
+    return (await this.fetchAllUsers()).map(user => this.toPublicUser(user))
   }
 
   /**
-   * Assign one or more roles to a user. Only admins can call this.  
-   * Pass a single string or an array of strings.  
+   * Assign one or more roles to a user. Admin-only.
    * @param   {string}          username
-   * @param   {string|string[]} roles    E.g. `'moderator'` or `['editor', 'moderator']`
+   * @param   {string|string[]} roles E.g. `'moderator'` or `['editor', 'moderator']`.
    * @returns {Promise<{ id: string, username: string, roles: string[], createdAt: string }>}
    */
   async setRoles(username, roles) {
     if (!this.session.isLoggedIn || !this.session.currentUser?.roles?.includes('admin')) {
       throw new DatabaseError('Only admins can assign roles', 403)
     }
+
     const rolesArray = Array.isArray(roles) ? roles : [roles]
-    if (!rolesArray.length || rolesArray.some(r => typeof r !== 'string' || !r)) {
+    if (!rolesArray.length || rolesArray.some(role => typeof role !== 'string' || !role)) {
       throw new DatabaseError('Roles must be one or more non-empty strings', 400)
     }
     if (rolesArray.includes('public') || rolesArray.includes('auth')) {
-      throw new DatabaseError('"public" and "auth" are reserved permission levels and cannot be used as roles', 400)
+      throw new DatabaseError('"public" and "auth" are reserved and cannot be used as roles', 400)
     }
+
     return retryOnConflict(async () => {
-      const file = await this.filesystem.readFile(this.userPath(username))
+      const file = await this.filesystem.readFile(this.userFilePath(username))
       if (!file) { throw new DatabaseError('User not found', 404) }
+
       const updated = { ...file.content, roles: rolesArray, updatedAt: new Date().toISOString() }
       await this.filesystem.writeFile(
-        this.userPath(username),
+        this.userFilePath(username),
         updated,
         `auth: set roles ${username} -> ${rolesArray.join(', ')}`,
         file.sha
       )
-      const safeUser = this.toSafeUser(updated)
-      // Keep the session in sync if the calling user changed their own roles.
-      if (this.session.currentUser?.username === username) { this.session.persistUser(safeUser) }
-      return safeUser
+
+      const publicUser = this.toPublicUser(updated)
+      // Keep the live session in sync if the calling user changed their own roles.
+      if (this.session.currentUser?.username === username) { this.session.persistUser(publicUser) }
+      return publicUser
     })
   }
 }
 
-// ─── GitHubDB ─────────────────────────────────────────────────────────────────
+
+// ═══ GitHubDB ═════════════════════════════════════════════════════════════════
 
 /**
  * The main entry point.  
- * Use the static factory methods to create instances:  
- * `GitHubDB.owner()`, `GitHubDB.public()`, `GitHubDB.login()`, `GitHubDB.register()`
+ * Use the static factory methods to create an instance:  
+ * `GitHubDB.owner()` or `GitHubDB.public()`
  *
  * @example
  * const db = await GitHubDB.owner({ owner: 'you', repo: 'my-db', token: 'ghp_...' })
  * const db = await GitHubDB.public({ owner: 'you', repo: 'my-db', publicToken: 'ghdb_enc_...' })
- * const db = await GitHubDB.login({ owner, repo, publicToken, username, password })
  */
 class GitHubDB {
   /**
    * @param {GitHubFilesystem} filesystem
-   * @param {object}  [options]
-   * @param {string}  [options.basePath='data']
-   * @param {boolean} [options.useCDN=true]
-   * @param {boolean} [options.enrollToken=true] Set `false` to skip public-token registration (owner mode).
+   * @param {object}           [options]
+   * @param {string}           [options.basePath='data']
+   * @param {boolean}          [options.useCDN=true]
+   * @param {boolean}          [options.enrollToken=true] Set `false` to skip public-token registration.
+   * @param {SessionState}     [options.storage=null]     Custom session storage (for SSR compatibility).
    */
-  constructor(filesystem, { basePath = 'data', useCDN = true, enrollToken = true } = {}) {
+  constructor(filesystem, { basePath = 'data', useCDN = true, enrollToken = true, storage = null } = {}) {
     this.filesystem     = filesystem
     this.basePath       = basePath
     this.useCDN         = useCDN
     this.enrollToken    = enrollToken
-    this.session        = new SessionState()
+    this.session        = new SessionState(storage)
     this.permissionsMap = null
+
     /** @type {KeyValueStore} */
-    this.kv             = new KeyValueStore(filesystem, basePath, useCDN, this.session, () => this.permissionsMap)
+    this.kv   = new KeyValueStore(filesystem, basePath, useCDN, this.session, () => this.permissionsMap)
     /** @type {AuthManager} */
-    this.auth           = new AuthManager(filesystem, this.session, basePath)
+    this.auth = new AuthManager(filesystem, this.session, basePath)
   }
 
-  // ── Public-token registry ─────────────────────────────────────────
+  // ══ Public-Token Registry ═════════════════════════════════════════════════════
 
   /**
    * Register `passedToken` in the `_kv/public` list if not already present.  
    * Called automatically by `GitHubDB.public()`.
-   * @param {string} passedToken The token as passed by the caller.
+   * @param {string} passedToken The token as originally passed by the caller.
    */
   async enrollPublicToken(passedToken) {
     if (!this.enrollToken) { return }
     const file        = await this.filesystem.readFile(`${this.basePath}/_kv/public.json`)
     const list        = file ? (file.content?.value ?? []) : []
     const encodedForm = passedToken.startsWith(ENCODE_PREFIX) ? passedToken : encodeToken(passedToken)
+
     if (!list.includes(encodedForm)) {
       await this.filesystem.writeFile(
         `${this.basePath}/_kv/public.json`,
@@ -1417,36 +1744,35 @@ class GitHubDB {
   }
 
   /**
-   * Throw if `passedToken` matches any entry in the `_kv/public` list.  
-   * Prevents public tokens from being used for owner-mode login.
+   * Throw a DatabaseError if `passedToken` matches any entry in the `_kv/public` list.  
+   * Prevents public bot tokens from being used for owner-mode admin login.
    * @param {string} passedToken
    */
   async assertNotPublicToken(passedToken) {
-    const file      = await this.filesystem.readFile(`${this.basePath}/_kv/public.json`)
-    const list      = file ? (file.content?.value ?? []) : []
-    const plainForm = passedToken.startsWith(ENCODE_PREFIX)
-      ? xorRotate(decodeBase64(passedToken.slice(ENCODE_PREFIX.length)))
-      : passedToken
+    const file  = await this.filesystem.readFile(`${this.basePath}/_kv/public.json`)
+    const list  = file ? (file.content?.value ?? []) : []
+    const plain = resolveToken(passedToken)
+
     for (const entry of list) {
-      const entryPlain = entry.startsWith(ENCODE_PREFIX)
-        ? xorRotate(decodeBase64(entry.slice(ENCODE_PREFIX.length)))
-        : entry
-      if (entryPlain === plainForm) {
+      if (resolveToken(entry) === plain) {
         throw new DatabaseError('Public tokens cannot be used for admin login', 403)
       }
     }
   }
 
-  // ── Static factory methods ────────────────────────────────────────
+  // ══ Static Factory Methods ════════════════════════════════════════════════════
 
   /**
    * **Owner mode** — use your personal PAT. Full access to the repo.  
    * Rejects if the supplied token matches a known public token.
-   * @param   {{ owner: string, repo: string, token: string, branch?: string, basePath?: string, useCDN?: boolean }} config
+   * @param   {{ owner: string, repo: string, token: string, ghBranch?: string, cdnBranch?: string, basePath?: string, useCDN?: boolean, storage?: SessionState }} config
    * @returns {Promise<GitHubDB>}
    */
-  static async owner({ owner, repo, token, branch = 'main', basePath = 'data', useCDN = true }) {
-    const db = new GitHubDB(new GitHubFilesystem({ owner, repo, token, branch }), { basePath, useCDN, enrollToken: false })
+  static async owner({ owner, repo, token, ghBranch = 'main', cdnBranch = 'master', basePath = 'data', useCDN = true, storage = null }) {
+    const db = new GitHubDB(
+      new GitHubFilesystem({ owner, repo, token, ghBranch, cdnBranch }),
+      { basePath, useCDN, enrollToken: false, storage }
+    )
     await db.assertNotPublicToken(token)
     return db
   }
@@ -1454,58 +1780,25 @@ class GitHubDB {
   /**
    * **Public mode** — embed a bot token so any visitor can read/write without their own PAT.  
    * On first use the token is registered in the `_kv/public` list (unless `enrollToken` is `false`).
-   * @param   {{ owner: string, repo: string, publicToken: string, branch?: string, basePath?: string, useCDN?: boolean, enrollToken?: boolean }} config
+   * @param   {{ owner: string, repo: string, publicToken: string, ghBranch?: string, cdnBranch?: string, basePath?: string, useCDN?: boolean, enrollToken?: boolean, storage?: SessionState }} config
    * @returns {Promise<GitHubDB>}
    */
-  static async public({ owner, repo, publicToken, branch = 'main', basePath = 'data', useCDN = true, enrollToken = true }) {
-    const token = publicToken.startsWith(ENCODE_PREFIX)
-      ? xorRotate(decodeBase64(publicToken.slice(ENCODE_PREFIX.length)))
-      : publicToken
-    const db    = new GitHubDB(new GitHubFilesystem({ owner, repo, token, branch }), { basePath, useCDN, enrollToken })
+  static async public({ owner, repo, publicToken, ghBranch = 'main', cdnBranch = 'master', basePath = 'data', useCDN = true, enrollToken = true, storage = null }) {
+    const db = new GitHubDB(
+      new GitHubFilesystem({ owner, repo, token: resolveToken(publicToken), ghBranch, cdnBranch }),
+      { basePath, useCDN, enrollToken, storage }
+    )
     await db.enrollPublicToken(publicToken).catch(error => {
       console.warn('[GitHubDB] Could not enroll public token:', error)
     })
     return db
   }
 
-  // ── Token helpers ─────────────────────────────────────────────────
+  // ══ Core API ══════════════════════════════════════════════════════════════════
 
   /**
-   * Obfuscate a PAT for embedding in public code.
-   * @param   {string} plainToken
-   * @returns {string}
-   */
-  static encodeToken(plainToken) { return encodeToken(plainToken) }
-
-  // ── Secure hashing (public API) ───────────────────────────────────
-
-  /**
-   * Hash a secret using PBKDF2-SHA256.
-   * @param   {string} secret
-   * @param   {string} [context=''] Optional binding context (e.g. username).
-   * @returns {Promise<string>}     `<salt>:<derivedKey>`
-   *
-   * @example
-   * const storedHash = await GitHubDB.hashSecret('ghp_myToken')
-   * await db.kv.set('pat_hash', storedHash)
-   * const ok = await GitHubDB.verifySecret('ghp_myToken', storedHash)
-   */
-  static hashSecret(secret, context = '') { return hashSecret(secret, context) }
-
-  /**
-   * Verify a plaintext secret against a hash produced by {@link GitHubDB.hashSecret}.
-   * @param   {string} secret
-   * @param   {string} storedHash   Value returned by `hashSecret`.
-   * @param   {string} [context=''] Must match the context used during hashing.
-   * @returns {Promise<boolean>}
-   */
-  static verifySecret(secret, storedHash, context = '') { return verifySecret(secret, storedHash, context) }
-
-  // ── Core API ──────────────────────────────────────────────────────
-
-  /**
-   * Get a handle on a named collection.  
-   * Supports arbitrarily deep nesting via `(collection, recordId, collection, recordId, ...)` pairs.
+   * Get a handle on a named collection.
+   * Supports arbitrarily deep nesting via alternating `(recordId, collectionName)` pairs.
    * @param   {string}    name     Root collection name.
    * @param   {...string} segments Alternating `recordId, collectionName` pairs for nesting.
    * @returns {Collection}
@@ -1517,30 +1810,35 @@ class GitHubDB {
   collection(name, ...segments) {
     assertValidId(name)
     if (segments.length % 2 !== 0) {
-      throw new DatabaseError('collection() requires an even number of extra segments: (recordId, collectionName) pairs')
+      throw new DatabaseError(
+        'collection() requires an even number of extra segments: alternating (recordId, collectionName) pairs'
+      )
     }
+
     let path     = `${this.basePath}/${name}`
     let leafName = name
+
     for (let i = 0; i < segments.length; i += 2) {
-      const recordId  = segments[i]
-      const childName = segments[i + 1]
+      const recordId      = segments[i]
+      const childName     = segments[i + 1]
       assertValidId(recordId)
       assertValidId(childName)
       path     = `${path}/${recordId}/${childName}`
       leafName = childName
     }
+
     return new Collection(this.filesystem, path, leafName, this.session, () => this.permissionsMap, this.useCDN)
   }
 
   /**
-   * Set per-collection (and per-KV-key) access permissions. Chainable.  
+   * Set per-collection (and per-KV-key) access permissions.  
    * Use the special key `'_kv'` to restrict the key-value store.
    * @param   {{ [name: string]: { read: string | string[], write: string | string[] } }} map
    * @returns {this}
    *
    * @example
    * db.permissions({
-   *   posts:    { read: 'public', write: 'auth' },
+   *   posts:    { read: 'public', write: 'auth'  },
    *   settings: { read: 'admin',  write: 'admin' },
    *   _kv:      { read: 'auth',   write: 'admin' },
    * })
@@ -1550,7 +1848,7 @@ class GitHubDB {
     return this
   }
 
-  // ── Utilities ─────────────────────────────────────────────────────
+  // ══ Utilities ═════════════════════════════════════════════════════════════════
 
   /**
    * Fetch the git commit history for a path.  
@@ -1559,17 +1857,51 @@ class GitHubDB {
    * @param   {number} [limit=30]
    * @returns {Promise<Array<{ sha: string, message: string, author: string, date: string, url: string }>>}
    */
-  getCommitHistory(path = '', limit = 30) { return this.filesystem.getCommitHistory(path, limit) }
+  getCommitHistory(path = '', limit = 30) {
+    return this.filesystem.getCommitHistory(path, limit)
+  }
 
   /**
    * Verify that the configured token and repo are accessible.  
-   * Throws a {@link DatabaseError} if not.
+   * Throws a DatabaseError if not.
    * @returns {Promise<object>} GitHub repo metadata.
    */
-  validateConnection() { return this.filesystem.validateConnection() }
+  validateConnection() {
+    return this.filesystem.validateConnection()
+  }
+
+  // ══ Static Token Helpers ══════════════════════════════════════════════════════
+
+  /**
+   * Obfuscate a plain PAT for safe embedding in public client-side code.  
+   * Pass the result as `publicToken` — the library decodes it automatically.  
+   * @param   {string} plainToken
+   * @returns {string}
+   */
+  static encodeToken(plainToken) { return encodeToken(plainToken) }
+
+  // ══ Static Cryptographic Helpers ═════════════════════════════════════════════
+
+  /**
+   * Hash a secret using PBKDF2-SHA256 (200 000 iterations).
+   * @param   {string} secret
+   * @param   {string} [context=''] Optional binding context (e.g. username).
+   * @returns {Promise<string>}     `<salt>:<derivedKey>`
+   */
+  static hashSecret(secret, context = '') { return hashSecret(secret, context) }
+
+  /**
+   * Verify a plaintext secret against a hash produced by {@link GitHubDB.hashSecret}.
+   * @param   {string} secret
+   * @param   {string} storedHash   Value returned by `hashSecret`.
+   * @param   {string} [context=''] Must match the context used during hashing.
+   * @returns {Promise<boolean>}
+   */
+  static verifySecret(secret, storedHash, context = '') { return verifySecret(secret, storedHash, context) }
 }
 
-// ─── Exports ──────────────────────────────────────────────────────────────────
+
+// ═══ Exports ══════════════════════════════════════════════════════════════════
 
 export { GitHubDB, DatabaseError }
 export default GitHubDB
