@@ -6,17 +6,17 @@
  *
  * ═══ QUICK START ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
  *
- *  Owner mode — your own PAT, full control:
- *    const db = await GitHubDB.owner({ owner, repo, token })
- *    const db = await GitHubDB.owner({ owner, repo, token, ghBranch: 'main', cdnBranch: 'master' })
+ *  Owner mode — your own PATs, full control:
+ *    const db = await GitHubDB.owner({ owner, repo, tokens: ['ghp_token1', 'ghp_token2'] })
+ *    const db = await GitHubDB.owner({ owner, repo, tokens, branch: 'main' })
  *
- *  Public mode — embed a bot token so visitors can interact without their own PAT:
- *    const db = await GitHubDB.public({ owner, repo, publicToken, ghBranch, cdnBranch, basePath, useCDN, enrollToken })
+ *  Public mode — embed bot tokens so visitors can interact without their own PAT:
+ *    const db = await GitHubDB.public({ owner, repo, publicTokens: ['ghdb_enc_...', 'ghdb_enc_...'] })
+ *    const db = await GitHubDB.public({ owner, repo, publicTokens, branch, basePath, useRaw, enrollToken })
  *
- *  CDN mode — recommended for public read-heavy apps (reads bypass API rate limits):
- *    const db = await GitHubDB.public({ ..., useCDN: true })
- *    // ghBranch  — branch used for GitHub API reads/writes   (default: 'main')
- *    // cdnBranch — branch used for jsDelivr CDN reads/purges (default: 'master')
+ *  Raw mode — recommended for public read-heavy apps (reads bypass API rate limits via raw.githubusercontent.com):
+ *    const db = await GitHubDB.public({ ..., useRaw: true })
+ *    // branch — branch used for GitHub API reads/writes and raw reads (default: 'main')
  *
  * ═══ PERMISSIONS ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
  *
@@ -33,8 +33,6 @@
  *  db.permissions({
  *    posts:          { read: 'public',                            write: 'auth'                    },
  *    settings:       { read: 'admin',                             write: 'admin'                   },
- *    comments:       { read: 'auth',                              write: 'auth'                    },
- *    drafts:         { read: 'editor',                            write: 'editor'                  },
  *    reports:        { read: ['moderator', 'analyst', 'auditor'], write: ['moderator', 'admin']    },
  *    'posts.abc123': { read: 'admin',                             write: 'admin'                   },
  *    _kv:            { read: 'auth',                              write: 'admin'                   },
@@ -115,9 +113,8 @@
  *
  * ═══ TOKEN ENCODING  (obfuscate a PAT before embedding in client-side code) ═════════════════════════════════════════════════════════════
  *
- *    const encoded = GitHubDB.encodeToken('ghp_myRealToken') // run once, paste result into source
+ *    const encoded = GitHubDB.encodeToken('ghp_myRealToken') // Note: obfuscation deters casual scraping only; it is not encryption.
  *    // Pass the encoded string as publicToken — the library decodes it automatically.
- *    // Note: obfuscation deters casual scraping only; it is not encryption.
  *
  * ═══ UTILITIES ══════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
  *
@@ -128,12 +125,10 @@
 
 'use strict'
 
-
 // ═══ Constants ════════════════════════════════════════════════════════════════
 
 const GITHUB_API_BASE     = 'https://api.github.com'
-const JSDELIVR_CDN_BASE   = 'https://cdn.jsdelivr.net/gh'
-const JSDELIVR_PURGE_BASE = 'https://purge.jsdelivr.net/gh'
+const RAW_GITHUB_BASE     = 'https://raw.githubusercontent.com'
 const GITHUB_API_VERSION  = '2022-11-28'
 
 const SESSION_STORAGE_KEY = '__githubdb_session__'
@@ -149,8 +144,8 @@ const PBKDF2_ITERATIONS = 200_000
 const ENCODE_PREFIX     = 'ghdb_enc_'
 const TOKEN_XOR_KEY     = 'GHDB'
 
-// Internal KV keys written by the auth system — excluded from kv.getAll().
-const INTERNAL_KV_KEYS = new Set(['admin-exists', 'public'])
+// Internal filenames written by the auth system.
+const INTERNAL_FILENAMES = new Set(['_admin-exists.json', '_public.json', '_index.json'])
 
 
 // ═══ Error ════════════════════════════════════════════════════════════════════
@@ -193,7 +188,7 @@ function assertValidId(id) {
  */
 function generateId() {
   const timestamp = Date.now().toString(36)
-  let   randomPart
+  let randomPart
 
   try {
     randomPart = Array.from(crypto.getRandomValues(new Uint8Array(6)))
@@ -237,8 +232,8 @@ function decodeBase64(base64) {
   }
   const binaryString = atob(base64.replace(/\n/g, ''))
   const bytes        = new Uint8Array(binaryString.length)
-  for (let i = 0; i  < binaryString.length; i++) {
-    bytes[i] = binaryString.charCodeAt(i)
+  for (let index = 0; index < binaryString.length; index++) {
+    bytes[index] = binaryString.charCodeAt(index)
   }
   return new TextDecoder().decode(bytes)
 }
@@ -253,19 +248,24 @@ const decodeFileContent = base64 => JSON.parse(decodeBase64(base64))
 // ═══ Token Obfuscation ════════════════════════════════════════════════════════
 
 /**
+ * XOR a string against the repeating TOKEN_XOR_KEY — shared by encode and resolve.
+ * @param   {string} input
+ * @returns {string}
+ */
+function xorToken(input) {
+  return Array.from(input)
+    .map((char, index) =>
+      String.fromCharCode(char.charCodeAt(0) ^ TOKEN_XOR_KEY.charCodeAt(index % TOKEN_XOR_KEY.length))
+    )
+    .join('')
+}
+
+/**
  * Obfuscate a plain PAT to a prefixed base64+XOR string suitable for embedding in client code.
  * @param   {string} plainToken
  * @returns {string}
  */
-function encodeToken(plainToken) {
-  return ENCODE_PREFIX + encodeBase64(
-    Array.from(plainToken)
-      .map((char, i) =>
-        String.fromCharCode(char.charCodeAt(0) ^ TOKEN_XOR_KEY.charCodeAt(i % TOKEN_XOR_KEY.length))
-      )
-      .join('')
-  )
-}
+const encodeToken = plainToken => ENCODE_PREFIX + encodeBase64(xorToken(plainToken))
 
 /**
  * Resolve a token that may be plain or obfuscated.
@@ -273,16 +273,8 @@ function encodeToken(plainToken) {
  * @returns {string}
  */
 function resolveToken(token) {
-  if (!token.startsWith(ENCODE_PREFIX)) return token
-
-  const payload = token.slice(ENCODE_PREFIX.length)
-  const decoded = decodeBase64(payload)
-
-  return Array.from(decoded)
-    .map((char, i) =>
-      String.fromCharCode(char.charCodeAt(0) ^ TOKEN_XOR_KEY.charCodeAt(i % TOKEN_XOR_KEY.length))
-    )
-    .join('')
+  if (!token.startsWith(ENCODE_PREFIX)) { return token }
+  return xorToken(decodeBase64(token.slice(ENCODE_PREFIX.length)))
 }
 
 
@@ -314,6 +306,13 @@ async function deriveKey(secret, context, salt) {
 }
 
 /**
+ * Convert a byte array to a hex string.
+ * @param   {Uint8Array} bytes
+ * @returns {string}
+ */
+const bytesToHex = bytes => Array.from(bytes).map(byte => byte.toString(16).padStart(2, '0')).join('')
+
+/**
  * Hash a secret using PBKDF2-SHA256.  
  * Output format: `<hex-salt>:<hex-derived-key>`.
  * @param   {string} secret
@@ -327,10 +326,7 @@ async function deriveKey(secret, context, salt) {
  */
 async function hashSecret(secret, context = '') {
   const saltBytes = crypto.getRandomValues(new Uint8Array(16))
-  const saltHex   = Array.from(saltBytes)
-    .map(byte => byte.toString(16).padStart(2, '0'))
-    .join('')
-  return `${saltHex}:${await deriveKey(secret, context, saltBytes)}`
+  return `${bytesToHex(saltBytes)}:${await deriveKey(secret, context, saltBytes)}`
 }
 
 /**
@@ -343,16 +339,16 @@ async function hashSecret(secret, context = '') {
  */
 async function verifySecret(secret, storedHash, context = '') {
   const [saltHex, expectedKey] = storedHash.split(':')
-  if (!saltHex || !expectedKey) { return false }
+  if (!saltHex || !expectedKey) return false
 
-  const saltBytes  = new Uint8Array(saltHex.match(/.{2}/g).map(pair => parseInt(pair, 16)))
+  const saltBytes    = new Uint8Array(saltHex.match(/.{2}/g).map(pair => parseInt(pair, 16)))
   const candidateKey = await deriveKey(secret, context, saltBytes)
 
-  if (candidateKey.length !== expectedKey.length) { return false }
+  if (candidateKey.length !== expectedKey.length) return false
 
   let bitDifferences = 0
-  for (let i = 0; i < candidateKey.length; i++) {
-    bitDifferences |= candidateKey.charCodeAt(i) ^ expectedKey.charCodeAt(i)
+  for (let index = 0; index < candidateKey.length; index++) {
+    bitDifferences |= candidateKey.charCodeAt(index) ^ expectedKey.charCodeAt(index)
   }
   return bitDifferences === 0
 }
@@ -362,24 +358,21 @@ async function verifySecret(secret, storedHash, context = '') {
 
 /**
  * Run an async task over each item with at most `limit` tasks in-flight at once.
- * @template type
+ * @template                          type
  * @param   {type[]}                  items
  * @param   {function(type): Promise} taskFn
  * @param   {number}                  [limit=CONCURRENCY_LIMIT]
  * @returns {Promise<any[]>}
  */
 async function runConcurrently(items, taskFn, limit = CONCURRENCY_LIMIT) {
-  const results   = []
-  const inFlight  = new Set()
+  const results  = []
+  const inFlight = new Set()
 
   for (const item of items) {
     const promise = Promise.resolve().then(() => taskFn(item))
     results.push(promise)
     inFlight.add(promise)
-
-    const cleanup = () => inFlight.delete(promise)
-    promise.then(cleanup, cleanup)
-
+    promise.then(() => inFlight.delete(promise), () => inFlight.delete(promise))
     if (inFlight.size >= limit) { await Promise.race(inFlight) }
   }
 
@@ -397,7 +390,7 @@ async function retryOnConflict(operation, maxRetries = MAX_WRITE_RETRIES) {
     try {
       return await operation()
     } catch (error) {
-      if (error.httpStatus === 409 && attempt < maxRetries) { continue }
+      if (error.httpStatus === 409 && attempt < maxRetries) continue
       throw error
     }
   }
@@ -431,7 +424,6 @@ function hasRequiredRole(requiredLevel, userRoles) {
 function enforcePermission(subject, operation, rule, session) {
   const requiredLevel = operation === 'read' ? (rule?.read ?? 'admin') : (rule?.write ?? 'admin')
 
-  // Empty array or 'public' -> anyone may proceed.
   if (!requiredLevel || requiredLevel === 'public' || (Array.isArray(requiredLevel) && !requiredLevel.length)) {
     return
   }
@@ -451,7 +443,7 @@ function enforcePermission(subject, operation, rule, session) {
 // ═══ Polling / Subscribe Utility ══════════════════════════════════════════════
 
 /**
- * Generic polling subscription used by both {@link Collection} and {@link KeyValueStore}.
+ * Generic polling subscription used by both {@link Collection} and {@link KeyValueStore}.  
  * Calls `callback` immediately on first poll, then again on any data change.
  *
  * @param   {object}                                                  options
@@ -464,10 +456,10 @@ function enforcePermission(subject, operation, rule, session) {
  * @returns {function(): void}                                                                  A stop function — call it to cancel polling.
  */
 function subscribeToDirectory({ listEntries, fetchRecord, entryToId, callback, intervalMs = 5000, onError = null }) {
-  const knownShas   = new Map() // id -> sha from last successful poll
-  const cachedData  = new Map() // id -> record / value
-  let   isPolling   = false
-  let   initialized = false
+  const knownShas  = new Map() // id -> sha from last successful poll
+  const cachedData = new Map() // id -> record / value
+  let isPolling    = false
+  let initialized  = false
 
   const poll = async () => {
     if (isPolling) { return }
@@ -483,9 +475,8 @@ function subscribeToDirectory({ listEntries, fetchRecord, entryToId, callback, i
 
       const toFetch    = [...currentShas.keys()].filter(id => knownShas.get(id) !== currentShas.get(id))
       const deletedIds = [...knownShas.keys()].filter(id => !currentShas.has(id))
-      const hasChanges = toFetch.length > 0 || deletedIds.length > 0 || !initialized
 
-      if (hasChanges) {
+      if (toFetch.length > 0 || deletedIds.length > 0 || !initialized) {
         const added   = []
         const changed = []
 
@@ -540,16 +531,15 @@ class SessionState {
    */
   constructor(storage = null) {
     this.activeUser = null
-
     this.store = storage
       ?? (typeof globalThis !== 'undefined' && globalThis.sessionStorage)
       ?? new Map()
-
     this.restoreSession()
   }
 
   // ══ Storage Adapters ══════════════════════════════════════════════════════════
 
+  // Prefers the Web Storage API (getItem/setItem/removeItem) with Map fallback.
   storageGet(key) {
     try {
       return typeof this.store.getItem === 'function'
@@ -560,15 +550,17 @@ class SessionState {
 
   storageSet(key, value) {
     try {
-      if (typeof this.store.setItem === 'function') { this.store.setItem(key, value) }
-      else                                          { this.store.set(key, value) }
+      typeof this.store.setItem === 'function'
+        ? this.store.setItem(key, value)
+        : this.store.set(key, value)
     } catch {}
   }
 
   storageDelete(key) {
     try {
-      if (typeof this.store.removeItem === 'function') { this.store.removeItem(key) }
-      else                                             { this.store.delete(key) }
+      typeof this.store.removeItem === 'function'
+        ? this.store.removeItem(key)
+        : this.store.delete(key)
     } catch {}
   }
 
@@ -618,34 +610,76 @@ class SessionState {
 
 // ═══ GitHub Filesystem Layer ══════════════════════════════════════════════════
 
-/** Low-level wrapper around the GitHub Contents API and jsDelivr CDN. */
+/** Low-level wrapper around the GitHub Contents API and raw.githubusercontent.com. */
 class GitHubFilesystem {
   /**
-   * @param {object} config
-   * @param {string} config.owner
-   * @param {string} config.repo
-   * @param {string} config.token                A GitHub PAT with content read/write and metadata/commits read scopes.
-   * @param {string} [config.ghBranch='main']    Branch used for API reads/writes.
-   * @param {string} [config.cdnBranch='master'] Branch used for CDN reads/purges.
+   * @param {object}   config
+   * @param {string}   config.owner
+   * @param {string}   config.repo
+   * @param {string[]} config.tokens          Array of GitHub PATs with content read/write and metadata/commits read scopes.
+   * @param {string}   [config.branch='main'] Branch used for API reads/writes and raw reads.
    */
-  constructor({ owner, repo, token, ghBranch = 'main', cdnBranch = 'master' }) {
-    this.owner      = owner
-    this.repo       = repo
-    this.token      = token
-    this.ghBranch   = ghBranch
-    this.cdnBranch  = cdnBranch
+  constructor({ owner, repo, tokens, branch = 'main' }) {
+    this.owner     = owner
+    this.repo      = repo
+    this.tokens    = tokens
+    this.branch    = branch
     /** ETag cache for directory listings: path -> { etag, data } */
-    this.etagCache  = new Map()
+    this.etagCache = new Map()
   }
 
   // ══ Request Helpers ═══════════════════════════════════════════════════════════
 
-  get authHeaders() {
+  /**
+   * Pick a random token from the pool.
+   * @param   {Set<string>} [exclude] Tokens to skip (already tried and failed).
+   * @returns {string|null}           A token, or `null` if all are excluded.
+   */
+  pickToken(exclude = new Set()) {
+    const available = this.tokens.filter(token => !exclude.has(token))
+    if (!available.length) { return null }
+    return available[Math.floor(Math.random() * available.length)]
+  }
+
+  /**
+   * Build Authorization headers for a specific token.
+   * @param   {string} token
+   * @returns {object}
+   */
+  headersForToken(token) {
     return {
-      Authorization:          `Bearer ${this.token}`,
+      Authorization:          `Bearer ${token}`,
       Accept:                 'application/vnd.github+json',
       'Content-Type':         'application/json',
       'X-GitHub-Api-Version': GITHUB_API_VERSION,
+    }
+  }
+
+  /**
+   * Execute a fetch using a random token from the pool.  
+   * If the chosen token fails the call is retried with a different random token.
+   * @param   {string}      url
+   * @param   {RequestInit} [init]
+   * @returns {Promise<Response>}
+   */
+  async fetchWithTokenFallback(url, init = {}) {
+    const tried = new Set()
+    while (true) {
+      const token = this.pickToken(tried)
+      if (!token) {
+        throw new DatabaseError('GitHub API request failed: all tokens in the pool are rate-limited or invalid', 429)
+      }
+      tried.add(token)
+
+      const response = await fetch(url, { ...init, headers: { ...init.headers, ...this.headersForToken(token) } })
+
+      if (this.isRateLimited(response) || response.status === 401) {
+        if (tried.size < this.tokens.length) { continue }
+        if (this.isRateLimited(response)) { this.throwRateLimitError(response) }
+        await this.throwApiError(response, `Auth failed (${response.status})`)
+      }
+
+      return response
     }
   }
 
@@ -668,59 +702,58 @@ class GitHubFilesystem {
 
   isRateLimited(response) {
     return response.status === 429
-      || (response.status  === 403 && response.headers.get('x-ratelimit-remaining') === '0')
+      || (response.status === 403 && response.headers.get('x-ratelimit-remaining') === '0')
   }
 
-  // ══ CDN Operations ════════════════════════════════════════════════════════════
+  // ══ File Read Operations ══════════════════════════════════════════════════════
 
   /**
-   * Read a JSON file via the jsDelivr CDN.
-   * @param   {string} filePath
-   * @returns {Promise<object|null>}
+   * Read a JSON file. Dispatches to raw.githubusercontent.com or the GitHub API.
+   * @param   {string}  filePath
+   * @param   {boolean} [raw=false]
+   * @returns {Promise<object|null>} raw = true -> parsed value | null || raw = false -> { content, sha } | null
    */
-  async readCDNFile(filePath) {
-    const url      = `${JSDELIVR_CDN_BASE}/${this.owner}/${this.repo}@${this.cdnBranch}/${filePath}`
-    const response = await fetch(url)
-    if (response.status === 404) { return null }
-    if (!response.ok) { throw new DatabaseError(`CDN read failed (${response.status})`, response.status) }
-    return response.json()
-  }
-
-  /**
-   * Purge a file from the jsDelivr CDN after a write or delete.
-   * @param   {string} filePath
-   * @returns {Promise<void>}
-   */
-  async purgeCDNFile(filePath) {
-    const url = `${JSDELIVR_PURGE_BASE}/${this.owner}/${this.repo}@${this.cdnBranch}/${filePath}`
-    try {
-      await fetch(url)
-    } catch (error) {
-      console.warn('[GitHubDB] CDN purge failed for', filePath, error)
+  async readFile(filePath, raw = false) {
+    if (raw) {
+      const url      = `${RAW_GITHUB_BASE}/${this.owner}/${this.repo}/${this.branch}/${filePath}`
+      const response = await fetch(url)
+      if (response.status === 404) { return null }
+      if (!response.ok) { throw new DatabaseError(`Raw read failed (${response.status})`, response.status) }
+      return response.json()
     }
-  }
 
-  // ══ File Operations ═══════════════════════════════════════════════════════════
-
-  /**
-   * Read a JSON file from the repo via the GitHub API.  
-   * Returns `null` for 404, or `{ content, sha }` for an existing file.
-   * @param   {string} filePath
-   * @returns {Promise<{ content: object, sha: string }|null>}
-   */
-  async readFile(filePath) {
-    const response = await fetch(`${this.contentsUrl(filePath)}?ref=${this.ghBranch}`, {
-      headers: this.authHeaders,
-    })
-
-    if (response.status === 404)    { return null }
+    const response = await this.fetchWithTokenFallback(`${this.contentsUrl(filePath)}?ref=${this.branch}`)
+    if (response.status === 404)      { return null }
     if (this.isRateLimited(response)) { this.throwRateLimitError(response) }
-    if (!response.ok) { await this.throwApiError(response, `Read failed (${response.status})`) }
+    if (!response.ok)                 { await this.throwApiError(response, `Read failed (${response.status})`) }
 
     const data = await response.json()
     if (Array.isArray(data)) { return null } // path is a directory
     return { content: decodeFileContent(data.content), sha: data.sha }
   }
+
+  /**
+   * Returns the files array from the directory index, or `null` if the index does not exist yet.
+   * @param   {string} dirPath
+   * @returns {Promise<string[]|null>}
+   */
+  async readIndex(dirPath) {
+    const data = await this.readFile(`${dirPath}/_index.json`, true)
+    return data ? (data.files ?? []) : null
+  }
+
+  /**
+   * Returns lightweight `{ name, type }` objects from the index, falling back to the API.
+   * @param   {string} dirPath
+   * @returns {Promise<object[]>}
+   */
+  async listDirectoryRaw(dirPath) {
+    const files = await this.readIndex(dirPath)
+    if (files === null) { return this.listDirectory(dirPath) }
+    return files.map(name => ({ name, type: 'file' }))
+  }
+
+  // ══ File Write / Delete Operations ════════════════════════════════════════════
 
   /**
    * Write (create or update) a JSON file in the repo.
@@ -734,19 +767,24 @@ class GitHubFilesystem {
     const body = {
       message: commitMessage,
       content: encodeFileContent(content),
-      branch:  this.ghBranch,
+      branch:  this.branch,
     }
-    if (existingSha) { body.sha = existingSha }
+    if (existingSha) body.sha = existingSha
 
-    const response = await fetch(this.contentsUrl(filePath), {
-      method:  'PUT',
-      headers: this.authHeaders,
-      body:    JSON.stringify(body),
+    const response = await this.fetchWithTokenFallback(this.contentsUrl(filePath), {
+      method: 'PUT',
+      body:   JSON.stringify(body),
     })
 
-    if (!response.ok) { await this.throwApiError(response, `Write failed (${response.status})`) }
+    if (!response.ok) await this.throwApiError(response, `Write failed (${response.status})`)
     const result = await response.json()
-    await this.purgeCDNFile(filePath)
+
+    if (filePath.split('/').pop() !== '_index.json') {
+      await this.upsertIndex(filePath, 'add').catch(error =>
+        console.warn('[GitHubDB] _index.json update failed for', filePath, error)
+      )
+    }
+
     return result
   }
 
@@ -761,14 +799,19 @@ class GitHubFilesystem {
     const existing = await this.readFile(filePath)
     if (!existing) { return false }
 
-    const response = await fetch(this.contentsUrl(filePath), {
-      method:  'DELETE',
-      headers: this.authHeaders,
-      body:    JSON.stringify({ message: commitMessage, sha: existing.sha, branch: this.ghBranch }),
+    const response = await this.fetchWithTokenFallback(this.contentsUrl(filePath), {
+      method: 'DELETE',
+      body:   JSON.stringify({ message: commitMessage, sha: existing.sha, branch: this.branch }),
     })
 
     if (!response.ok) { await this.throwApiError(response, `Delete failed (${response.status})`) }
-    await this.purgeCDNFile(filePath)
+
+    if (filePath.split('/').pop() !== '_index.json') {
+      await this.upsertIndex(filePath, 'remove').catch(err =>
+        console.warn('[GitHubDB] _index.json update failed for', filePath, err)
+      )
+    }
+
     return true
   }
 
@@ -780,12 +823,12 @@ class GitHubFilesystem {
    * @returns {Promise<object[]>}
    */
   async listDirectory(dirPath) {
-    const url            = `${this.contentsUrl(dirPath)}?ref=${this.ghBranch}`
-    const cached         = this.etagCache.get(dirPath)
-    const requestHeaders = { ...this.authHeaders }
-    if (cached?.etag) { requestHeaders['If-None-Match'] = cached.etag }
+    const url    = `${this.contentsUrl(dirPath)}?ref=${this.branch}`
+    const cached = this.etagCache.get(dirPath)
 
-    const response = await fetch(url, { headers: requestHeaders })
+    const response = await this.fetchWithTokenFallback(url, {
+      headers: cached?.etag ? { 'If-None-Match': cached.etag } : {},
+    })
 
     if (response.status === 304) { return cached.data }
     if (response.status === 404) { return [] }
@@ -796,8 +839,47 @@ class GitHubFilesystem {
     if (!Array.isArray(data)) { return [] }
 
     const etag = response.headers.get('etag')
-    if (etag) { this.etagCache.set(dirPath, { etag, data }) }
+    if (etag) this.etagCache.set(dirPath, { etag, data })
     return data
+  }
+
+  // ══ Index Maintenance ═════════════════════════════════════════════════════════
+
+  /**
+   * Add or remove a filename from the `_index.json` file in the same directory.
+   * @param   {string}         filePath Full repo path to the affected file (e.g. `data/posts/abc.json`).
+   * @param   {'add'|'remove'} action
+   * @returns {Promise<void>}
+   */
+  async upsertIndex(filePath, action) {
+    const segments  = filePath.split('/')
+    const fileName  = segments.pop()
+    const dirPath   = segments.join('/')
+    const indexPath = `${dirPath}/_index.json`
+
+    for (let attempt = 0; attempt <= MAX_WRITE_RETRIES; attempt++) {
+      const existing   = await this.readFile(indexPath)
+      const currentSet = new Set(existing ? (existing.content?.files ?? []) : [])
+
+      if (action === 'add') { currentSet.add(fileName) }
+      else                  { currentSet.delete(fileName) }
+
+      currentSet.delete('_index.json')
+      const files = [...currentSet].sort()
+
+      try {
+        await this.writeFile(
+          indexPath,
+          { files, updatedAt: new Date().toISOString() },
+          `index: update ${dirPath}`,
+          existing?.sha
+        )
+        return
+      } catch (error) {
+        if (error.httpStatus === 409 && attempt < MAX_WRITE_RETRIES) { continue }
+        throw error
+      }
+    }
   }
 
   // ══ Audit & Health ════════════════════════════════════════════════════════════
@@ -810,12 +892,11 @@ class GitHubFilesystem {
    * @returns {Promise<Array<{ sha: string, message: string, author: string, date: string, url: string }>>}
    */
   async getCommitHistory(path = '', limit = 30) {
-    const params = new URLSearchParams({ per_page: limit.toString(), sha: this.ghBranch })
+    const params = new URLSearchParams({ per_page: limit.toString(), sha: this.branch })
     if (path) { params.set('path', path) }
 
-    const response = await fetch(
-      `${GITHUB_API_BASE}/repos/${this.owner}/${this.repo}/commits?${params}`,
-      { headers: this.authHeaders }
+    const response = await this.fetchWithTokenFallback(
+      `${GITHUB_API_BASE}/repos/${this.owner}/${this.repo}/commits?${params}`
     )
 
     if (!response.ok) {
@@ -832,13 +913,12 @@ class GitHubFilesystem {
   }
 
   /**
-   * Verify that the configured token has access to the repository.  
+   * Verify that the configured token has access to the repository.
    * @returns {Promise<object>} GitHub repo metadata.
    */
   async validateConnection() {
-    const response = await fetch(
-      `${GITHUB_API_BASE}/repos/${this.owner}/${this.repo}`,
-      { headers: this.authHeaders }
+    const response = await this.fetchWithTokenFallback(
+      `${GITHUB_API_BASE}/repos/${this.owner}/${this.repo}`
     )
     if (!response.ok) {
       throw new DatabaseError(
@@ -864,15 +944,15 @@ class Collection {
    * @param {string}                  collectionName Leaf collection name, used in permission lookups.
    * @param {SessionState}            session
    * @param {function(): object|null} getPermissions Returns the current permissions map.
-   * @param {boolean}                 [useCDN=true]
+   * @param {boolean}                 [useRaw=true]
    */
-  constructor(filesystem, collectionPath, collectionName, session, getPermissions, useCDN = true) {
+  constructor(filesystem, collectionPath, collectionName, session, getPermissions, useRaw = true) {
     this.filesystem     = filesystem
     this.collectionPath = collectionPath
     this.name           = collectionName
     this.session        = session
     this.getPermissions = typeof getPermissions === 'function' ? getPermissions : () => getPermissions
-    this.useCDN         = useCDN
+    this.useRaw         = useRaw
   }
 
   // ══ Internal Helpers ══════════════════════════════════════════════════════════
@@ -892,8 +972,7 @@ class Collection {
   checkPermission(operation, recordId = null) {
     const perms = this.getPermissions()
     const rule  = (recordId ? perms?.[`${this.name}.${recordId}`] : null) ?? perms?.[this.name]
-    const label = `Collection "${this.name}"${recordId ? ` record "${recordId}"` : ''}`
-    enforcePermission(label, operation, rule, this.session)
+    enforcePermission(`Collection "${this.name}"${recordId ? ` record "${recordId}"` : ''}`, operation, rule, this.session)
   }
 
   /**
@@ -905,7 +984,29 @@ class Collection {
    */
   withTimestamps(data, existingRecord = null) {
     const now = new Date().toISOString()
-    return { ...data, createdAt: existingRecord ? existingRecord.createdAt : now, updatedAt: now }
+    return { ...data, createdAt: existingRecord?.createdAt ?? now, updatedAt: now }
+  }
+
+  /**
+   * Read a single record file, routing to raw or API depending on `this.useRaw`.
+   * @param   {string} filePath
+   * @returns {Promise<object|null>}
+   */
+  async readRecord(filePath) {
+    if (this.useRaw) { return this.filesystem.readFile(filePath, true) }
+    const file = await this.filesystem.readFile(filePath)
+    return file ? file.content : null
+  }
+
+  /**
+   * List directory entries, routing to raw or API depending on `this.useRaw`.
+   * @param   {string} dirPath
+   * @returns {Promise<object[]>}
+   */
+  listEntries(dirPath) {
+    return this.useRaw
+      ? this.filesystem.listDirectoryRaw(dirPath)
+      : this.filesystem.listDirectory(dirPath)
   }
 
   // ══ CRUD ══════════════════════════════════════════════════════════════════════
@@ -934,9 +1035,7 @@ class Collection {
    */
   async get(id) {
     this.checkPermission('read', id)
-    if (this.useCDN) { return this.filesystem.readCDNFile(this.filePathForId(id)) }
-    const file = await this.filesystem.readFile(this.filePathForId(id))
-    return file ? file.content : null
+    return this.readRecord(this.filePathForId(id))
   }
 
   /**
@@ -946,18 +1045,15 @@ class Collection {
    */
   async list({ limit, offset = 0 } = {}) {
     this.checkPermission('read')
-    let entries = (await this.filesystem.listDirectory(this.collectionPath))
-      .filter(entry => entry.type === 'file' && entry.name.endsWith('.json') && !entry.name.startsWith('_'))
+    let entries = (await this.listEntries(this.collectionPath))
+      .filter(entry => entry.type === 'file' && !INTERNAL_FILENAMES.has(entry.name))
 
-    if (offset > 0)                          { entries = entries.slice(offset) }
+    if (offset > 0)                           { entries = entries.slice(offset) }
     if (Number.isInteger(limit) && limit > 0) { entries = entries.slice(0, limit) }
 
-    const records = await runConcurrently(entries, async entry => {
-      if (this.useCDN) { return this.filesystem.readCDNFile(`${this.collectionPath}/${entry.name}`) }
-      const file = await this.filesystem.readFile(`${this.collectionPath}/${entry.name}`)
-      return file ? file.content : null
-    })
-
+    const records = await runConcurrently(entries, entry =>
+      this.readRecord(`${this.collectionPath}/${entry.name}`)
+    )
     return records.filter(Boolean)
   }
 
@@ -1048,14 +1144,14 @@ class Collection {
   async query(filterFn, { sort, limit, offset = 0 } = {}) {
     if (sort) {
       let results = (await this.list()).filter(filterFn).sort(sort)
-      if (offset > 0)                               { results = results.slice(offset) }
-      if (Number.isInteger(limit) && limit > 0)     { results = results.slice(0, limit) }
+      if (offset > 0)                           { results = results.slice(offset) }
+      if (Number.isInteger(limit) && limit > 0) { results = results.slice(0, limit) }
       return results
     }
 
-    const results      = []
-    let   batchOffset  = 0
-    let   skipped      = 0
+    const results   = []
+    let batchOffset = 0
+    let skipped     = 0
 
     while (true) {
       const batch = await this.list({ limit: QUERY_BATCH_SIZE, offset: batchOffset })
@@ -1063,7 +1159,7 @@ class Collection {
 
       for (const record of batch) {
         if (!filterFn(record)) { continue }
-        if (skipped < offset) { skipped++; continue }
+        if (skipped < offset)  { skipped++; continue }
         results.push(record)
         if (Number.isInteger(limit) && results.length >= limit) { return results }
       }
@@ -1102,8 +1198,8 @@ class Collection {
   async count(filterFn = null) {
     this.checkPermission('read')
     if (!filterFn) {
-      const entries = await this.filesystem.listDirectory(this.collectionPath)
-      return entries.filter(entry => entry.type === 'file' && entry.name.endsWith('.json')).length
+      return (await this.listEntries(this.collectionPath))
+        .filter(entry => entry.type === 'file' && !INTERNAL_FILENAMES.has(entry.name)).length
     }
     return (await this.list()).filter(filterFn).length
   }
@@ -1115,7 +1211,7 @@ class Collection {
    */
   async exists(id) {
     this.checkPermission('read', id)
-    return !!(await this.filesystem.readFile(this.filePathForId(id)))
+    return !!(await this.readRecord(this.filePathForId(id)))
   }
 
   // ══ Bulk Operations ═══════════════════════════════════════════════════════════
@@ -1156,9 +1252,8 @@ class Collection {
    */
   async clear() {
     this.checkPermission('write')
-    const entries = await this.filesystem.listDirectory(this.collectionPath)
-    const ids = entries
-      .filter(entry => entry.type === 'file' && entry.name.endsWith('.json') && !entry.name.startsWith('_'))
+    const ids = (await this.listEntries(this.collectionPath))
+      .filter(entry => entry.type === 'file' && !INTERNAL_FILENAMES.has(entry.name))
       .map(entry => entry.name.replace(/\.json$/, ''))
 
     return runConcurrently(ids, async id => {
@@ -1187,10 +1282,10 @@ class Collection {
    */
   subscribe(callback, intervalMs = 5000, onError = null) {
     return subscribeToDirectory({
-      listEntries: () => this.filesystem.listDirectory(this.collectionPath),
-      fetchRecord: id  => this.get(id),
+      listEntries: ()    => this.filesystem.listDirectory(this.collectionPath),
+      fetchRecord: id    => this.get(id),
       entryToId:   entry =>
-        entry.type === 'file' && entry.name.endsWith('.json')
+        entry.type === 'file' && !INTERNAL_FILENAMES.has(entry.name)
           ? entry.name.replace(/\.json$/, '')
           : null,
       callback,
@@ -1211,13 +1306,13 @@ class KeyValueStore {
   /**
    * @param {GitHubFilesystem}        filesystem
    * @param {string}                  basePath
-   * @param {boolean}                 [useCDN=true]
+   * @param {boolean}                 [useRaw=true]
    * @param {SessionState|null}       [session=null]
    * @param {function(): object|null} [getPermissions=null]
    */
-  constructor(filesystem, basePath, useCDN = true, session = null, getPermissions = null) {
+  constructor(filesystem, basePath, useRaw = true, session = null, getPermissions = null) {
     this.filesystem     = filesystem
-    this.useCDN         = useCDN
+    this.useRaw         = useRaw
     this.kvPath         = `${basePath}/_kv`
     this.session        = session
     this.getPermissions = getPermissions
@@ -1234,8 +1329,23 @@ class KeyValueStore {
     if (!this.session || !this.getPermissions) { return }
     const perms = this.getPermissions()
     const rule  = (key ? perms?.[`_kv.${key}`] : null) ?? perms?.['_kv']
-    const label = `KV${key ? ` key "${key}"` : ' store'}`
-    enforcePermission(label, operation, rule, this.session)
+    enforcePermission(`KV${key ? ` key "${key}"` : ' store'}`, operation, rule, this.session)
+  }
+
+  /**
+   * Read a KV file, routing to raw or API based on `this.useRaw`.  
+   * Returns the stored value (not the wrapper object), or `null` if not found.
+   * @param   {string} key
+   * @returns {Promise<unknown|null>}
+   */
+  async readValue(key) {
+    const filePath = this.filePathForKey(key)
+    if (this.useRaw) {
+      const file = await this.filesystem.readFile(filePath, true)
+      return file ? file.value : null
+    }
+    const file = await this.filesystem.readFile(filePath)
+    return file ? file.content.value : null
   }
 
   // ══ Public API ════════════════════════════════════════════════════════════════
@@ -1267,12 +1377,7 @@ class KeyValueStore {
    */
   async get(key) {
     this.checkPermission('read', key)
-    if (this.useCDN) {
-      const file = await this.filesystem.readCDNFile(this.filePathForKey(key))
-      return file ? file.value : null
-    }
-    const file = await this.filesystem.readFile(this.filePathForKey(key))
-    return file ? file.content.value : null
+    return this.readValue(key)
   }
 
   /**
@@ -1293,7 +1398,7 @@ class KeyValueStore {
    */
   async has(key) {
     this.checkPermission('read', key)
-    return !!(await this.filesystem.readFile(this.filePathForKey(key)))
+    return (await this.readValue(key)) !== null
   }
 
   /**
@@ -1348,11 +1453,13 @@ class KeyValueStore {
    */
   async getAll() {
     this.checkPermission('read')
-    const jsonFiles = (await this.filesystem.listDirectory(this.kvPath))
-      .filter(entry => {
-        if (!entry.name.endsWith('.json')) { return false }
-        return !INTERNAL_KV_KEYS.has(entry.name.replace(/\.json$/, ''))
-      })
+    const dirEntries = this.useRaw
+      ? await this.filesystem.listDirectoryRaw(this.kvPath)
+      : await this.filesystem.listDirectory(this.kvPath)
+
+    const jsonFiles = dirEntries.filter(entry =>
+      entry.name.endsWith('.json') && !INTERNAL_FILENAMES.has(entry.name)
+    )
 
     const pairs = await runConcurrently(jsonFiles, async entry => {
       const key = entry.name.replace(/\.json$/, '')
@@ -1379,15 +1486,7 @@ class KeyValueStore {
    * stop()
    */
   subscribe(callback, intervalMs = 5000, onError = null) {
-    const wrapCallback = ({ records, added, changed, removed }) => {
-      const pairsToMap = arr => Object.fromEntries(arr.map(([k, v]) => [k, v]))
-      callback({
-        records: pairsToMap(records),
-        added:   pairsToMap(added),
-        changed: pairsToMap(changed),
-        removed,
-      })
-    }
+    const pairsToMap = array => Object.fromEntries(array.map(([key, value]) => [key, value]))
 
     return subscribeToDirectory({
       listEntries: () => this.filesystem.listDirectory(this.kvPath),
@@ -1397,10 +1496,14 @@ class KeyValueStore {
       },
       entryToId: entry => {
         if (!entry.name.endsWith('.json')) { return null }
-        const key = entry.name.replace(/\.json$/, '')
-        return INTERNAL_KV_KEYS.has(key) ? null : key
+        return INTERNAL_FILENAMES.has(entry.name) ? null : entry.name.replace(/\.json$/, '')
       },
-      callback:  wrapCallback,
+      callback: ({ records, added, changed, removed }) => callback({
+        records: pairsToMap(records),
+        added:   pairsToMap(added),
+        changed: pairsToMap(changed),
+        removed,
+      }),
       intervalMs,
       onError,
     })
@@ -1420,10 +1523,12 @@ class AuthManager {
    * @param {GitHubFilesystem} filesystem
    * @param {SessionState}     session
    * @param {string}           [basePath='data']
+   * @param {boolean}          [useRaw=true]
    */
-  constructor(filesystem, session, basePath = 'data') {
+  constructor(filesystem, session, basePath = 'data', useRaw = true) {
     this.filesystem = filesystem
     this.session    = session
+    this.useRaw     = useRaw
     this.kvPath     = `${basePath}/_kv`
     this.authPath   = `${basePath}/_auth`
   }
@@ -1436,23 +1541,33 @@ class AuthManager {
   }
 
   /**
-   * Fetch a single user record by username.  
-   * Returns `{ user, sha }` or `null` if not found.
-   * @param   {string} username
-   * @returns {Promise<{ user: object, sha: string }|null>}
+   * Fetch a single user record.
+   *
+   * Pass `raw = true` for read-only operations —  returns only the parsed value.  
+   * Pass `raw = false` (default) when a write will follow — returns `{ user, sha }`.
+   *
+   * @param   {string}  username
+   * @param   {boolean} [raw=false]
+   * @returns {Promise<{ user: object, sha: string }|object|null>}
    */
-  async fetchUser(username) {
-    const file = await this.filesystem.readFile(this.userFilePath(username))
+  async fetchUser(username, raw = false) {
+    const file = await this.filesystem.readFile(this.userFilePath(username), raw)
+    if (raw) { return file } // already parsed value or null
     return file ? { user: file.content, sha: file.sha } : null
   }
 
   /** Fetch every user record from the _auth directory. */
   async fetchAllUsers() {
-    const entries = (await this.filesystem.listDirectory(this.authPath))
-      .filter(entry => entry.name.endsWith('.json'))
+    const dirEntries = this.useRaw
+      ? await this.filesystem.listDirectoryRaw(this.authPath)
+      : await this.filesystem.listDirectory(this.authPath)
+
+    const entries = dirEntries.filter(entry => !INTERNAL_FILENAMES.has(entry.name))
 
     const records = await runConcurrently(entries, async entry => {
-      const result = await this.fetchUser(entry.name.replace(/\.json$/, ''))
+      const username = entry.name.replace(/\.json$/, '')
+      if (this.useRaw) { return this.fetchUser(username, true) }
+      const result = await this.fetchUser(username)
       return result ? result.user : null
     })
 
@@ -1464,8 +1579,8 @@ class AuthManager {
    * @param   {object} user
    * @returns {{ id: string, username: string, roles: string[], createdAt: string }}
    */
-  toPublicUser(user) {
-    return { id: user.id, username: user.username, roles: user.roles, createdAt: user.createdAt }
+  toPublicUser({ id, username, roles, createdAt }) {
+    return { id, username, roles, createdAt }
   }
 
   // ══ Public API ════════════════════════════════════════════════════════════════
@@ -1484,14 +1599,18 @@ class AuthManager {
   async verifySession() {
     if (!this.session.isLoggedIn) { return false }
 
-    const result = await this.fetchUser(this.session.currentUser.username)
-    if (!result) { this.logout(); return false }
+    const user = this.useRaw
+      ? await this.fetchUser(this.session.currentUser.username, true)
+      : (await this.fetchUser(this.session.currentUser.username))?.user
 
-    const storedRoles  = [...(result.user.roles ?? [])].sort().join(',')
-    const sessionRoles = [...(this.session.currentUser.roles ?? [])].sort().join(',')
-    if (storedRoles !== sessionRoles) {
-      this.session.persistUser(this.toPublicUser(result.user))
+    if (!user) { 
+      this.logout()
+      return false
     }
+
+    const storedRoles  = [...(user.roles ?? [])].sort().join(',')
+    const sessionRoles = [...(this.session.currentUser.roles ?? [])].sort().join(',')
+    if (storedRoles !== sessionRoles) { this.session.persistUser(this.toPublicUser(user)) }
 
     return true
   }
@@ -1516,12 +1635,14 @@ class AuthManager {
       throw new DatabaseError(`Password must be at least ${MIN_PASSWORD_LENGTH} characters`, 400)
     }
 
-    const existing = await this.filesystem.readFile(this.userFilePath(username))
-    if (existing) { throw new DatabaseError('That username is already taken', 409) }
+    const existingRaw = this.useRaw
+      ? await this.fetchUser(username, true)
+      : (await this.fetchUser(username))?.user
+    if (existingRaw) { throw new DatabaseError('That username is already taken', 409) }
 
     const newUser = await retryOnConflict(async () => {
-      const adminSentinelPath = `${this.kvPath}/admin-exists.json`
-      const adminSentinel     = await this.filesystem.readFile(adminSentinelPath)
+      const adminSentinelPath = `${this.kvPath}/_admin-exists.json`
+      const adminSentinel     = await this.filesystem.readFile(adminSentinelPath, this.useRaw)
       const isFirstUser       = !adminSentinel
 
       const user = {
@@ -1535,7 +1656,6 @@ class AuthManager {
       try {
         await this.filesystem.writeFile(this.userFilePath(username), user, `auth: register ${username}`)
       } catch (writeError) {
-        // 422 or 409 means a concurrent registration claimed the same username.
         if (writeError.httpStatus === 422 || writeError.httpStatus === 409) {
           throw new DatabaseError('That username is already taken', 409)
         }
@@ -1569,11 +1689,14 @@ class AuthManager {
       throw new DatabaseError('Username and password are required', 400)
     }
 
-    const file       = await this.filesystem.readFile(this.userFilePath(username))
-    const user       = file ? file.content : null
-    const isValidPw  = user ? await verifySecret(password, user.passwordHash, username.toLowerCase()) : false
+    const user = this.useRaw
+      ? await this.fetchUser(username, true)
+      : (await this.fetchUser(username))?.user
+    const isValidPw = user ? await verifySecret(password, user.passwordHash, username.toLowerCase()) : false
 
-    if (!user || !isValidPw) { throw new DatabaseError('Invalid username or password', 401) }
+    if (!user || !isValidPw) {
+      throw new DatabaseError('Invalid username or password', 401)
+    }
 
     const publicUser = this.toPublicUser(user)
     this.session.persistUser(publicUser)
@@ -1596,10 +1719,14 @@ class AuthManager {
     }
     return retryOnConflict(async () => {
       const file = await this.filesystem.readFile(this.userFilePath(username))
-      if (!file) { throw new DatabaseError('User not found', 404) }
+      if (!file) {
+        throw new DatabaseError('User not found', 404)
+      }
 
       const isValidPw = await verifySecret(currentPassword, file.content.passwordHash, username.toLowerCase())
-      if (!isValidPw) { throw new DatabaseError('Incorrect current password', 401) }
+      if (!isValidPw) {
+        throw new DatabaseError('Incorrect current password', 401)
+      }
 
       const updated = {
         ...file.content,
@@ -1625,16 +1752,20 @@ class AuthManager {
    */
   async deleteAccount(username, password) {
     const file = await this.filesystem.readFile(this.userFilePath(username))
-    if (!file) { throw new DatabaseError('User not found', 404) }
+    if (!file) {
+      throw new DatabaseError('User not found', 404)
+    }
 
-    const isValidPw = await verifySecret(password, file.content.passwordHash, username.toLowerCase())
-    if (!isValidPw) { throw new DatabaseError('Incorrect password', 401) }
+    const isValidPasswd = await verifySecret(password, file.content.passwordHash, username.toLowerCase())
+    if (!isValidPasswd) {
+      throw new DatabaseError('Incorrect password', 401)
+    }
 
     await retryOnConflict(() =>
       this.filesystem.deleteFile(this.userFilePath(username), `auth: delete account ${username}`)
     )
 
-    if (this.session.currentUser?.username === username) { this.session.clearSession() }
+    if (this.session.currentUser?.username === username) this.session.clearSession()
     return { deleted: true }
   }
 
@@ -1648,37 +1779,36 @@ class AuthManager {
 
   /**
    * Assign one or more roles to a user. Admin-only.
-   * @param   {string}          username
-   * @param   {string|string[]} roles E.g. `'moderator'` or `['editor', 'moderator']`.
+   * @param   {string}   username
+   * @param   {string[]} roles E.g. `['editor', 'moderator']`.
    * @returns {Promise<{ id: string, username: string, roles: string[], createdAt: string }>}
    */
   async setRoles(username, roles) {
     if (!this.session.isLoggedIn || !this.session.currentUser?.roles?.includes('admin')) {
       throw new DatabaseError('Only admins can assign roles', 403)
     }
-
-    const rolesArray = Array.isArray(roles) ? roles : [roles]
-    if (!rolesArray.length || rolesArray.some(role => typeof role !== 'string' || !role)) {
+    if (!roles.length || roles.some(role => typeof role !== 'string' || !role)) {
       throw new DatabaseError('Roles must be one or more non-empty strings', 400)
     }
-    if (rolesArray.includes('public') || rolesArray.includes('auth')) {
+    if (roles.includes('public') || roles.includes('auth')) {
       throw new DatabaseError('"public" and "auth" are reserved and cannot be used as roles', 400)
     }
 
     return retryOnConflict(async () => {
       const file = await this.filesystem.readFile(this.userFilePath(username))
-      if (!file) { throw new DatabaseError('User not found', 404) }
+      if (!file) {
+        throw new DatabaseError('User not found', 404)
+      }
 
-      const updated = { ...file.content, roles: rolesArray, updatedAt: new Date().toISOString() }
+      const updated = { ...file.content, roles, updatedAt: new Date().toISOString() }
       await this.filesystem.writeFile(
         this.userFilePath(username),
         updated,
-        `auth: set roles ${username} -> ${rolesArray.join(', ')}`,
+        `auth: set roles ${username} -> ${roles.join(', ')}`,
         file.sha
       )
 
       const publicUser = this.toPublicUser(updated)
-      // Keep the live session in sync if the calling user changed their own roles.
       if (this.session.currentUser?.username === username) { this.session.persistUser(publicUser) }
       return publicUser
     })
@@ -1702,55 +1832,60 @@ class GitHubDB {
    * @param {GitHubFilesystem} filesystem
    * @param {object}           [options]
    * @param {string}           [options.basePath='data']
-   * @param {boolean}          [options.useCDN=true]
+   * @param {boolean}          [options.useRaw=true]
    * @param {boolean}          [options.enrollToken=true] Set `false` to skip public-token registration.
    * @param {SessionState}     [options.storage=null]     Custom session storage (for SSR compatibility).
    */
-  constructor(filesystem, { basePath = 'data', useCDN = true, enrollToken = true, storage = null } = {}) {
+  constructor(filesystem, { basePath = 'data', useRaw = true, enrollToken = true, storage = null } = {}) {
     this.filesystem     = filesystem
     this.basePath       = basePath
-    this.useCDN         = useCDN
+    this.useRaw         = useRaw
     this.enrollToken    = enrollToken
     this.session        = new SessionState(storage)
     this.permissionsMap = null
 
     /** @type {KeyValueStore} */
-    this.kv   = new KeyValueStore(filesystem, basePath, useCDN, this.session, () => this.permissionsMap)
+    this.kv   = new KeyValueStore(filesystem, basePath, useRaw, this.session, () => this.permissionsMap)
     /** @type {AuthManager} */
-    this.auth = new AuthManager(filesystem, this.session, basePath)
+    this.auth = new AuthManager(filesystem, this.session, basePath, useRaw)
   }
 
   // ══ Public-Token Registry ═════════════════════════════════════════════════════
 
   /**
-   * Register `passedToken` in the `_kv/public` list if not already present.  
+   * Register `passedToken` in the `_kv/_public` list if not already present.  
    * Called automatically by `GitHubDB.public()`.
    * @param {string} passedToken The token as originally passed by the caller.
    */
   async enrollPublicToken(passedToken) {
     if (!this.enrollToken) { return }
-    const file        = await this.filesystem.readFile(`${this.basePath}/_kv/public.json`)
-    const list        = file ? (file.content?.value ?? []) : []
     const encodedForm = passedToken.startsWith(ENCODE_PREFIX) ? passedToken : encodeToken(passedToken)
+    const publicPath  = `${this.basePath}/_kv/_public.json`
 
-    if (!list.includes(encodedForm)) {
-      await this.filesystem.writeFile(
-        `${this.basePath}/_kv/public.json`,
-        { key: 'public', value: [...list, encodedForm], updatedAt: new Date().toISOString() },
-        'kv: set public',
-        file?.sha
-      )
-    }
+    // Fast raw check first — skip API entirely if already enrolled
+    const rawData = await this.filesystem.readFile(publicPath, true)
+    if (rawData?.value?.includes(encodedForm)) { return }
+
+    // Need to write — fetch via API to get the SHA
+    const file = await this.filesystem.readFile(publicPath)
+    const list  = file ? (file.content?.value ?? []) : []
+    if (list.includes(encodedForm)) { return } // race condition guard
+
+    await this.filesystem.writeFile(
+      publicPath,
+      { key: '_public', value: [...list, encodedForm], updatedAt: new Date().toISOString() },
+      'kv: set _public',
+      file?.sha
+    )
   }
 
   /**
-   * Throw a DatabaseError if `passedToken` matches any entry in the `_kv/public` list.  
-   * Prevents public bot tokens from being used for owner-mode admin login.
+   * Throw a DatabaseError if `passedToken` matches any entry in the `_kv/_public` list.
    * @param {string} passedToken
    */
   async assertNotPublicToken(passedToken) {
-    const file  = await this.filesystem.readFile(`${this.basePath}/_kv/public.json`)
-    const list  = file ? (file.content?.value ?? []) : []
+    const raw   = await this.filesystem.readFile(`${this.basePath}/_kv/_public.json`, true)
+    const list  = raw?.value ?? []
     const plain = resolveToken(passedToken)
 
     for (const entry of list) {
@@ -1763,41 +1898,41 @@ class GitHubDB {
   // ══ Static Factory Methods ════════════════════════════════════════════════════
 
   /**
-   * **Owner mode** — use your personal PAT. Full access to the repo.  
+   * **Owner mode** — use your personal PAT (or a pool of PATs). Full access to the repo.  
    * Rejects if the supplied token matches a known public token.
-   * @param   {{ owner: string, repo: string, token: string, ghBranch?: string, cdnBranch?: string, basePath?: string, useCDN?: boolean, storage?: SessionState }} config
+   * @param   {{ owner: string, repo: string, tokens: string[], branch?: string, basePath?: string, useRaw?: boolean, storage?: SessionState }} config
    * @returns {Promise<GitHubDB>}
    */
-  static async owner({ owner, repo, token, ghBranch = 'main', cdnBranch = 'master', basePath = 'data', useCDN = true, storage = null }) {
+  static async owner({ owner, repo, tokens, branch = 'main', basePath = 'data', useRaw = true, storage = null }) {
     const db = new GitHubDB(
-      new GitHubFilesystem({ owner, repo, token, ghBranch, cdnBranch }),
-      { basePath, useCDN, enrollToken: false, storage }
+      new GitHubFilesystem({ owner, repo, tokens, branch }),
+      { basePath, useRaw, enrollToken: false, storage }
     )
-    await db.assertNotPublicToken(token)
+    for (const token of tokens) await db.assertNotPublicToken(token)
     return db
   }
 
   /**
-   * **Public mode** — embed a bot token so any visitor can read/write without their own PAT.  
-   * On first use the token is registered in the `_kv/public` list (unless `enrollToken` is `false`).
-   * @param   {{ owner: string, repo: string, publicToken: string, ghBranch?: string, cdnBranch?: string, basePath?: string, useCDN?: boolean, enrollToken?: boolean, storage?: SessionState }} config
+   * **Public mode** — embed a bot token (or pool of tokens) so any visitor can read/write without their own PAT.  
+   * On first use each token is registered in the `_kv/_public` list (unless `enrollToken` is `false`).
+   * @param   {{ owner: string, repo: string, publicTokens: string[], branch?: string, basePath?: string, useRaw?: boolean, enrollToken?: boolean, storage?: SessionState }} config
    * @returns {Promise<GitHubDB>}
    */
-  static async public({ owner, repo, publicToken, ghBranch = 'main', cdnBranch = 'master', basePath = 'data', useCDN = true, enrollToken = true, storage = null }) {
+  static async public({ owner, repo, publicTokens, branch = 'main', basePath = 'data', useRaw = true, enrollToken = true, storage = null }) {
     const db = new GitHubDB(
-      new GitHubFilesystem({ owner, repo, token: resolveToken(publicToken), ghBranch, cdnBranch }),
-      { basePath, useCDN, enrollToken, storage }
+      new GitHubFilesystem({ owner, repo, tokens: publicTokens.map(resolveToken), branch }),
+      { basePath, useRaw, enrollToken, storage }
     )
-    await db.enrollPublicToken(publicToken).catch(error => {
+    await Promise.all(publicTokens.map(token => db.enrollPublicToken(token).catch(error => {
       console.warn('[GitHubDB] Could not enroll public token:', error)
-    })
+    })))
     return db
   }
 
   // ══ Core API ══════════════════════════════════════════════════════════════════
 
   /**
-   * Get a handle on a named collection.
+   * Get a handle on a named collection.  
    * Supports arbitrarily deep nesting via alternating `(recordId, collectionName)` pairs.
    * @param   {string}    name     Root collection name.
    * @param   {...string} segments Alternating `recordId, collectionName` pairs for nesting.
@@ -1819,20 +1954,19 @@ class GitHubDB {
     let leafName = name
 
     for (let i = 0; i < segments.length; i += 2) {
-      const recordId      = segments[i]
-      const childName     = segments[i + 1]
+      const recordId  = segments[i]
+      const childName = segments[i + 1]
       assertValidId(recordId)
       assertValidId(childName)
       path     = `${path}/${recordId}/${childName}`
       leafName = childName
     }
 
-    return new Collection(this.filesystem, path, leafName, this.session, () => this.permissionsMap, this.useCDN)
+    return new Collection(this.filesystem, path, leafName, this.session, () => this.permissionsMap, this.useRaw)
   }
 
   /**
-   * Set per-collection (and per-KV-key) access permissions.  
-   * Use the special key `'_kv'` to restrict the key-value store.
+   * Set per-collection/key and `'_kv'` for all keys' access permissions.
    * @param   {{ [name: string]: { read: string | string[], write: string | string[] } }} map
    * @returns {this}
    *
@@ -1874,7 +2008,7 @@ class GitHubDB {
 
   /**
    * Obfuscate a plain PAT for safe embedding in public client-side code.  
-   * Pass the result as `publicToken` — the library decodes it automatically.  
+   * Pass the result as `publicToken` — the library decodes it automatically.
    * @param   {string} plainToken
    * @returns {string}
    */
