@@ -8,11 +8,11 @@
  *
  *  Owner mode — your own PATs, full control:
  *    const db = await GitHubDB.owner({ owner, repo, tokens: ['ghp_token1', 'ghp_token2'] })
- *    const db = await GitHubDB.owner({ owner, repo, tokens, branch: 'main' })
+ *    const db = await GitHubDB.owner({ owner, repo, tokens, branch: 'main', rawBranch: 'master' })
  *
  *  Public mode — embed bot tokens so visitors can interact without their own PAT:
  *    const db = await GitHubDB.public({ owner, repo, publicTokens: ['ghdb_enc_...', 'ghdb_enc_...'] })
- *    const db = await GitHubDB.public({ owner, repo, publicTokens, branch, basePath, useRaw, enrollToken })
+ *    const db = await GitHubDB.public({ owner, repo, publicTokens, branch, rawBranch, basePath, useRaw, enrollToken })
  *
  *  Raw mode — recommended for public read-heavy apps (reads bypass API rate limits via raw.githubusercontent.com):
  *    const db = await GitHubDB.public({ ..., useRaw: true })
@@ -619,11 +619,12 @@ class GitHubFilesystem {
    * @param {string[]} config.tokens          Array of GitHub PATs with content read/write and metadata/commits read scopes.
    * @param {string}   [config.branch='main'] Branch used for API reads/writes and raw reads.
    */
-  constructor({ owner, repo, tokens, branch = 'main' }) {
+  constructor({ owner, repo, tokens, branch = 'main', rawBranch = null }) {
     this.owner     = owner
     this.repo      = repo
     this.tokens    = tokens
     this.branch    = branch
+    this.rawBranch = rawBranch ?? branch
     /** ETag cache for directory listings: path -> { etag, data } */
     this.etagCache = new Map()
   }
@@ -715,7 +716,7 @@ class GitHubFilesystem {
    */
   async readFile(filePath, raw = false) {
     if (raw) {
-      const url      = `${RAW_GITHUB_BASE}/${this.owner}/${this.repo}/${this.branch}/${filePath}`
+      const url      = `${RAW_GITHUB_BASE}/${this.owner}/${this.repo}/${this.rawBranch}/${filePath}`
       const response = await fetch(url)
       if (response.status === 404) { return null }
       if (!response.ok) { throw new DatabaseError(`Raw read failed (${response.status})`, response.status) }
@@ -1900,12 +1901,12 @@ class GitHubDB {
   /**
    * **Owner mode** — use your personal PAT (or a pool of PATs). Full access to the repo.  
    * Rejects if the supplied token matches a known public token.
-   * @param   {{ owner: string, repo: string, tokens: string[], branch?: string, basePath?: string, useRaw?: boolean, storage?: SessionState }} config
+   * @param   {{ owner: string, repo: string, tokens: string[], branch?: string, rawBranch?: string, basePath?: string, useRaw?: boolean, storage?: SessionState }} config
    * @returns {Promise<GitHubDB>}
    */
-  static async owner({ owner, repo, tokens, branch = 'main', basePath = 'data', useRaw = true, storage = null }) {
+  static async owner({ owner, repo, tokens, branch = 'main', rawBranch = null , basePath = 'data', useRaw = true, storage = null }) {
     const db = new GitHubDB(
-      new GitHubFilesystem({ owner, repo, tokens, branch }),
+      new GitHubFilesystem({ owner, repo, tokens, branch, rawBranch }),
       { basePath, useRaw, enrollToken: false, storage }
     )
     for (const token of tokens) await db.assertNotPublicToken(token)
@@ -1915,12 +1916,12 @@ class GitHubDB {
   /**
    * **Public mode** — embed a bot token (or pool of tokens) so any visitor can read/write without their own PAT.  
    * On first use each token is registered in the `_kv/_public` list (unless `enrollToken` is `false`).
-   * @param   {{ owner: string, repo: string, publicTokens: string[], branch?: string, basePath?: string, useRaw?: boolean, enrollToken?: boolean, storage?: SessionState }} config
+   * @param   {{ owner: string, repo: string, publicTokens: string[], branch?: string, rawBranch?: string, basePath?: string, useRaw?: boolean, enrollToken?: boolean, storage?: SessionState }} config
    * @returns {Promise<GitHubDB>}
    */
-  static async public({ owner, repo, publicTokens, branch = 'main', basePath = 'data', useRaw = true, enrollToken = true, storage = null }) {
+  static async public({ owner, repo, publicTokens, branch = 'main', rawBranch = null, basePath = 'data', useRaw = true, enrollToken = true, storage = null }) {
     const db = new GitHubDB(
-      new GitHubFilesystem({ owner, repo, tokens: publicTokens.map(resolveToken), branch }),
+      new GitHubFilesystem({ owner, repo, tokens: publicTokens.map(resolveToken), branch, rawBranch }),
       { basePath, useRaw, enrollToken, storage }
     )
     await Promise.all(publicTokens.map(token => db.enrollPublicToken(token).catch(error => {
@@ -2032,6 +2033,13 @@ class GitHubDB {
    * @returns {Promise<boolean>}
    */
   static verifySecret(secret, storedHash, context = '') { return verifySecret(secret, storedHash, context) }
+}
+
+
+// ═══ Browser DevTools Helper ══════════════════════════════════════════════════
+
+if (typeof window !== 'undefined') {
+  window.GitHubDB = GitHubDB
 }
 
 
