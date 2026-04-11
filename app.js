@@ -12,7 +12,12 @@ const DEFAULT_CONFIG = {
     ],
 }
 
+let timer = null
 const PAGE_SIZE = 12
+
+/* Warning Styles */
+const LABEL = '[!]  404/400 errors above are normal — GitHubDB is racing cache variants, failed branches are handled gracefully  '
+const STYLE = 'background:#9e6a03; color:#fff; font-family:monospace; font-size:11px; padding:4px 8px; border-radius:4px'
 
 /** Social platform SVG icons, keyed by platform name. */
 const SOCIAL_ICONS = {
@@ -1215,6 +1220,27 @@ window.addEventListener('popstate', () => {
 
 
 /* ══════════════════════════════════════════════════════════════════
+   Error warning in DevTools
+   ══════════════════════════════════════════════════════════════════ */
+const warn = () => {
+  clearTimeout(timer)
+  timer = setTimeout(() => {
+    console.log('%c' + LABEL, STYLE)
+  }, 250)
+}
+
+const _fetch = window.fetch.bind(window)
+window.fetch = async (...args) => {
+  const res = await _fetch(...args)
+  if (res.status === 404 || res.status === 400) warn()
+  return res
+}
+
+const _clear = console.clear.bind(console)
+console.clear = () => { _clear(); warn() }
+
+
+/* ══════════════════════════════════════════════════════════════════
    Init
    ══════════════════════════════════════════════════════════════════ */
 async function init(cfg) {
@@ -1261,3 +1287,4 @@ async function init(cfg) {
 updateNav(null)
 dom.authSubmitBtn.disabled = true
 init(getConfig())
+warn()
