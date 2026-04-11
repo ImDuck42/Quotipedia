@@ -6,7 +6,7 @@ import { GitHubDB, DatabaseError } from './github-db.js'
 const DEFAULT_CONFIG = {
     owner:        'ImDuck42',
     repo:         'Quotipedia',
-    rawBranch:    'master',
+    rawBranches:  ['main', 'master', 'refs/heads/main', 'HEAD'],
     publicTokens: [
         'ghdb_enc_ICEwKjIqGzImPBtzdgoFcBQOcAN3GSsXARAhKg8PFDEGFz0Adw4nKj0xBzJ/PykXETAqICgFLxoKHTUnPhwqKn97AxYXLBcPNTgwCxAfDnR0HwkaFyYgLhIkIg8T',
     ],
@@ -1227,7 +1227,7 @@ async function init(cfg) {
         db = await GitHubDB.public({
             owner:        cfg.owner,
             repo:         cfg.repo,
-            rawBranch:    cfg.rawBranch,
+            rawBranches:  cfg.rawBranches,
             publicTokens: cfg.publicTokens,
         })
 

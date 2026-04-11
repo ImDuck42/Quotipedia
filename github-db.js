@@ -8,14 +8,15 @@
  *
  *  Owner mode — your own PATs, full control:
  *    const db = await GitHubDB.owner({ owner, repo, tokens: ['ghp_token1', 'ghp_token2'] })
- *    const db = await GitHubDB.owner({ owner, repo, tokens, branch: 'main', rawBranch: 'master' })
+ *    const db = await GitHubDB.owner({ owner, repo, tokens, branch: 'main', rawBranches: ['master', 'backup'] })
+ *    // rawBranches — array of branches used for raw reads; the one with the most recently updated file is used
  *
  *  Public mode — embed bot tokens so visitors can interact without their own PAT:
  *    const db = await GitHubDB.public({ owner, repo, publicTokens: ['ghdb_enc_...', 'ghdb_enc_...'] })
- *    const db = await GitHubDB.public({ owner, repo, publicTokens, branch, rawBranch, basePath, useRaw, enrollToken })
+ *    const db = await GitHubDB.public({ owner, repo, publicTokens, branch, rawBranches, basePath, useRaw, enrollToken })
  *
  *  Raw mode — recommended for public read-heavy apps (reads bypass API rate limits via raw.githubusercontent.com):
- *    const db = await GitHubDB.public({ ..., useRaw: true })
+ *    const db = await GitHubDB.public({ ..., useRaw: true, branch: main })
  *    // branch — branch used for GitHub API reads/writes and raw reads (default: 'main')
  *
  * ═══ PERMISSIONS ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
@@ -616,15 +617,16 @@ class GitHubFilesystem {
    * @param {object}   config
    * @param {string}   config.owner
    * @param {string}   config.repo
-   * @param {string[]} config.tokens          Array of GitHub PATs with content read/write and metadata/commits read scopes.
-   * @param {string}   [config.branch='main'] Branch used for API reads/writes and raw reads.
+   * @param {string[]} config.tokens                 Array of GitHub PATs with content read/write and metadata/commits read scopes.
+   * @param {string}   [config.branch='main']        Branch used for GitHub API reads/writes.
+   * @param {string[]} [config.rawBranches=['main']] Array of branches used for raw reads where the branch whose file has the most recent Last-Modified timestamp is used.
    */
-  constructor({ owner, repo, tokens, branch = 'main', rawBranch = null }) {
-    this.owner     = owner
-    this.repo      = repo
-    this.tokens    = tokens
-    this.branch    = branch
-    this.rawBranch = rawBranch ?? branch
+  constructor({ owner, repo, tokens, branch = 'main', rawBranches = null }) {
+    this.owner       = owner
+    this.repo        = repo
+    this.tokens      = tokens
+    this.branch      = branch
+    this.rawBranches = rawBranches ?? [branch]
     /** ETag cache for directory listings: path -> { etag, data } */
     this.etagCache = new Map()
   }
@@ -709,20 +711,49 @@ class GitHubFilesystem {
   // ══ File Read Operations ══════════════════════════════════════════════════════
 
   /**
-   * Read a JSON file. Dispatches to raw.githubusercontent.com or the GitHub API.
+   * Fetches the freshest branch from `rawBranches` for a given file path by comparing Last-Modified headers.  
+   * Falls back to the first branch if no timestamps are available.
+   * @param   {string} filePath
+   * @returns {Promise<string>} The branch name with the most recently updated file.
+   */
+  async fetchFreshestRaw(filePath) {
+    const results = await Promise.all(
+      this.rawBranches.map(async branch => {
+        const url = `${RAW_GITHUB_BASE}/${this.owner}/${this.repo}/${branch}/${filePath}`
+        try {
+          const response = await fetch(url)
+          if (!response.ok) { return { data: null, ms: -1 } }
+          const data = await response.json()
+          const ts   = data?.updatedAt ?? data?.createdAt ?? null
+          return { data, ms: ts ? new Date(ts).getTime() : 0 }
+        } catch {
+          return { data: null, ms: -1 }
+        }
+      })
+    )
+
+    const best = results.reduce((a, b) => (b.ms > a.ms ? b : a))
+    return best.data ?? null
+  }
+
+  /**
+   * Read a JSON file. Dispatches to raw.githubusercontent.com or the GitHub API.  
+   * When using raw mode, the branch with the most recently updated file is selected from `rawBranches`.
    * @param   {string}  filePath
    * @param   {boolean} [raw=false]
    * @returns {Promise<object|null>} raw = true -> parsed value | null || raw = false -> { content, sha } | null
    */
   async readFile(filePath, raw = false) {
     if (raw) {
-      const url      = `${RAW_GITHUB_BASE}/${this.owner}/${this.repo}/${this.rawBranch}/${filePath}`
-      const response = await fetch(url)
-      if (response.status === 404) { return null }
-      if (!response.ok) { throw new DatabaseError(`Raw read failed (${response.status})`, response.status) }
-      return response.json()
+      if (this.rawBranches.length === 1) {
+        const url      = `${RAW_GITHUB_BASE}/${this.owner}/${this.repo}/${this.rawBranches[0]}/${filePath}`
+        const response = await fetch(url)
+        if (response.status === 404) { return null }
+        if (!response.ok) { throw new DatabaseError(`Raw read failed (${response.status})`, response.status) }
+        return response.json()
+      }
+      return this.fetchFreshestRaw(filePath)
     }
-
     const response = await this.fetchWithTokenFallback(`${this.contentsUrl(filePath)}?ref=${this.branch}`)
     if (response.status === 404)      { return null }
     if (this.isRateLimited(response)) { this.throwRateLimitError(response) }
@@ -1901,12 +1932,12 @@ class GitHubDB {
   /**
    * **Owner mode** — use your personal PAT (or a pool of PATs). Full access to the repo.  
    * Rejects if the supplied token matches a known public token.
-   * @param   {{ owner: string, repo: string, tokens: string[], branch?: string, rawBranch?: string, basePath?: string, useRaw?: boolean, storage?: SessionState }} config
+   * @param   {{ owner: string, repo: string, tokens: string[], branch?: string, rawBranches?: string[], basePath?: string, useRaw?: boolean, storage?: SessionState }} config
    * @returns {Promise<GitHubDB>}
    */
-  static async owner({ owner, repo, tokens, branch = 'main', rawBranch = null , basePath = 'data', useRaw = true, storage = null }) {
+  static async owner({ owner, repo, tokens, branch = 'main', rawBranches = null, basePath = 'data', useRaw = true, storage = null }) {
     const db = new GitHubDB(
-      new GitHubFilesystem({ owner, repo, tokens, branch, rawBranch }),
+      new GitHubFilesystem({ owner, repo, tokens, branch, rawBranches }),
       { basePath, useRaw, enrollToken: false, storage }
     )
     for (const token of tokens) await db.assertNotPublicToken(token)
@@ -1916,12 +1947,12 @@ class GitHubDB {
   /**
    * **Public mode** — embed a bot token (or pool of tokens) so any visitor can read/write without their own PAT.  
    * On first use each token is registered in the `_kv/_public` list (unless `enrollToken` is `false`).
-   * @param   {{ owner: string, repo: string, publicTokens: string[], branch?: string, rawBranch?: string, basePath?: string, useRaw?: boolean, enrollToken?: boolean, storage?: SessionState }} config
+   * @param   {{ owner: string, repo: string, publicTokens: string[], branch?: string, rawBranches?: string[], basePath?: string, useRaw?: boolean, enrollToken?: boolean, storage?: SessionState }} config
    * @returns {Promise<GitHubDB>}
    */
-  static async public({ owner, repo, publicTokens, branch = 'main', rawBranch = null, basePath = 'data', useRaw = true, enrollToken = true, storage = null }) {
+  static async public({ owner, repo, publicTokens, branch = 'main', rawBranches = null, basePath = 'data', useRaw = true, enrollToken = true, storage = null }) {
     const db = new GitHubDB(
-      new GitHubFilesystem({ owner, repo, tokens: publicTokens.map(resolveToken), branch, rawBranch }),
+      new GitHubFilesystem({ owner, repo, tokens: publicTokens.map(resolveToken), branch, rawBranches }),
       { basePath, useRaw, enrollToken, storage }
     )
     await Promise.all(publicTokens.map(token => db.enrollPublicToken(token).catch(error => {
