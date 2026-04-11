@@ -49,7 +49,7 @@ let activeTag   = ''
 let sortMode    = 'newest' // 'newest' | 'oldest' | 'top'
 
 // Social data (local cache; source of truth is KV)
-let likesMap  = {}       // quoteId → Set<username>
+let likesMap  = {}        // quoteId -> Set<username>
 let bookmarks = new Set() // quoteIds bookmarked by the current user
 
 
