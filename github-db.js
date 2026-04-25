@@ -721,7 +721,7 @@ class GitHubFilesystem {
       this.rawBranches.map(async branch => {
         const url = `${RAW_GITHUB_BASE}/${this.owner}/${this.repo}/${branch}/${filePath}`
         try {
-          const response = await fetch(url)
+          const response = await fetch(url, { cache: 'reload'})
           if (!response.ok) { return { data: null, ms: -1 } }
           const data = await response.json()
           const ts   = data?.updatedAt ?? data?.createdAt ?? null
@@ -747,7 +747,7 @@ class GitHubFilesystem {
     if (raw) {
       if (this.rawBranches.length === 1) {
         const url      = `${RAW_GITHUB_BASE}/${this.owner}/${this.repo}/${this.rawBranches[0]}/${filePath}`
-        const response = await fetch(url)
+        const response = await fetch(url, { cache: 'reload' })
         if (response.status === 404) { return null }
         if (!response.ok) { throw new DatabaseError(`Raw read failed (${response.status})`, response.status) }
         return response.json()
