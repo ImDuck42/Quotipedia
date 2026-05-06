@@ -126,8 +126,10 @@
 
 'use strict'
 
+
 // ═══ Constants ════════════════════════════════════════════════════════════════
 
+const DATABASE_VERSION    = '2.8.3'
 const GITHUB_API_BASE     = 'https://api.github.com'
 const RAW_GITHUB_BASE     = 'https://raw.githubusercontent.com'
 const GITHUB_API_VERSION  = '2022-11-28'
@@ -147,6 +149,11 @@ const TOKEN_XOR_KEY     = 'GHDB'
 
 // Internal filenames written by the auth system.
 const INTERNAL_FILENAMES = new Set(['_admin-exists.json', '_public.json', '_index.json'])
+
+// Check for library updates on GitHub and log changelog entries if a newer version is available.
+const DATABASE_UPDATER = await import(
+  `https://imduck42.github.io/GHDB/updater.js`
+); await DATABASE_UPDATER.checkForUpdate(DATABASE_VERSION)
 
 
 // ═══ Error ════════════════════════════════════════════════════════════════════
@@ -721,7 +728,7 @@ class GitHubFilesystem {
       this.rawBranches.map(async branch => {
         const url = `${RAW_GITHUB_BASE}/${this.owner}/${this.repo}/${branch}/${filePath}`
         try {
-          const response = await fetch(url, { cache: 'reload'})
+          const response = await fetch(url, { cache: 'reload' })
           if (!response.ok) { return { data: null, ms: -1 } }
           const data = await response.json()
           const ts   = data?.updatedAt ?? data?.createdAt ?? null
@@ -1204,22 +1211,26 @@ class Collection {
   }
 
   /**
-   * Return the first record matching the predicate, or `null` if none match.
+   * Returns all records matching the predicate, or an empty array if none match.
    * @param   {function(object): boolean} filterFn
-   * @returns {Promise<object|null>}
+   * @returns {Promise<object[]>}
    */
-  async findOne(filterFn) {
+  async search(filterFn) {
+    const results = []
     let batchOffset = 0
 
     while (true) {
       const batch = await this.list({ limit: QUERY_BATCH_SIZE, offset: batchOffset })
-      if (batch.length === 0) { return null }
+      if (batch.length === 0) { break }
 
-      const match = batch.find(filterFn)
-      if (match) { return match }
+      const matches = batch.filter(filterFn)
+      results.push(...matches)
 
+      if (batch.length < QUERY_BATCH_SIZE) { break }
       batchOffset += QUERY_BATCH_SIZE
     }
+
+    return results
   }
 
   /**
