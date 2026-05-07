@@ -38,7 +38,7 @@ jobs:
       - name: Rebuild all _index.json files
         run: |
           # Internal filenames the library writes itself — never listed as data.
-          INTERNAL="^(_index|_admin-exists|_public)\.json$"
+          INTERNAL="^(_index|_admin-exists|_public|_origins)\.json$"
 
           # ISO-8601 timestamp for updatedAt (e.g. 2026-03-27T20:32:50.816Z)
           TIMESTAMP="$(date -u +%Y-%m-%dT%H:%M:%S).$(
