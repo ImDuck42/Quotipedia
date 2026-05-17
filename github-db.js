@@ -151,9 +151,11 @@ const TOKEN_XOR_KEY     = 'GHDB'
 const INTERNAL_FILENAMES = new Set(['_admin-exists.json', '_public.json', '_index.json'])
 
 // Check for library updates on GitHub and log changelog entries if a newer version is available.
-const DATABASE_UPDATER = await import(
-  `https://imduck42.github.io/GHDB/updater.js`
-); await DATABASE_UPDATER.checkForUpdate(DATABASE_VERSION)
+const ADDON_BASE = 'https://imduck42.github.io/GHDB/addons'
+try {
+  const DATABASE_UPDATER = await import(`${ADDON_BASE}/updater.js`)
+  await DATABASE_UPDATER.checkForUpdate(DATABASE_VERSION)
+} catch { }
 
 
 // ═══ Error ════════════════════════════════════════════════════════════════════
