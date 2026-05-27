@@ -5,7 +5,7 @@
   <link>https://ImDuck42.github.io/Quotipedia/</link>
   <description>A community quote-sharing site</description>
   <language>en</language>
-  <lastBuildDate>Wed, 27 May 2026 23:27:51 GMT</lastBuildDate>
+  <lastBuildDate>Wed, 27 May 2026 23:27:58 GMT</lastBuildDate>
   <atom:link href="https://raw.githubusercontent.com/ImDuck42/Quotipedia/main/feed.xml" rel="self" type="application/rss+xml"/>
   <item>
   <title>"Your family-tree must be a wreath" — max0r</title>
@@ -33,19 +33,6 @@
   <author>GodLoverRoflRofl69</author>
   <description>Gott hat die FDP nur geschaffen, um uns zu prüfen</description>
   <category>politik</category>
-</item>
-<item>
-  <title>"Update time test:
-0: {branch: 'refs/heads/main', status: 200, updatedAt: '2026-04-11T04:04:07.019Z'}
-1: {branch: 'refs/heads/master', status: 404, updatedAt: null}"</title>
-  <link>https://ImDuck42.github.io/Quotipedia/#quote/mntt8vg7-050u2n2d1d5i</link>
-  <guid isPermaLink="true">https://ImDuck42.github.io/Quotipedia/#quote/mntt8vg7-050u2n2d1d5i</guid>
-  <pubDate>Sat, 11 Apr 2026 04:04:05 GMT</pubDate>
-  <author>ImDuck42</author>
-  <description>Update time test:
-0: {branch: 'refs/heads/main', status: 200, updatedAt: '2026-04-11T04:04:07.019Z'}
-1: {branch: 'refs/heads/master', status: 404, updatedAt: null}</description>
-  
 </item>
 <item>
   <title>"Ein Auto braucht keinen Führerschein, um gefahren zu werden." — Meine Fahrlehrerin oder so</title>
