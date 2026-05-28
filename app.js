@@ -4,11 +4,11 @@ import { GitHubDB, DatabaseError } from './github-db.js'
    Config & constants
    ══════════════════════════════════════════════════════════════════ */
 const DEFAULT_CONFIG = {
-    owner:        'ImDuck42',
-    repo:         'Quotipedia',
-    rawBranches:  ['main', 'master', 'refs/heads/main', 'HEAD'],
-    useRaw:       false,
-    publicTokens: [
+    owner:       'ImDuck42',
+    repo:        'Quotipedia',
+    rawBranches: ['main', 'master', 'refs/heads/main', 'HEAD'],
+    useRaw:      false,
+    tokens:      [
         'ghdb_enc_ICEwKjIqGzImPBtzdgoFcBQOcAN3GSsXARAhKg8PFDEGFz0Adw4nKj0xBzJ/PykXETAqICgFLxoKHTUnPhwqKn97AxYXLBcPNTgwCxAfDnR0HwkaFyYgLhIkIg8T',
     ],
     urlCheck:   atob(atob('YUhSMGNITTZMeTlrYVhOamIzSmtMbU52YlM5aGNHa3ZkMlZpYUc5dmEzTXZNVFV3T1RVMk56UTBPRFUxTnpReU1EWXlOUzl2Wms5VmNHdDVjVVIxUlZCU2VrOXZjak5yUlhsVlJFWllPRE0zU0RoVVRtcHdaR2hNUzNkd1ZGOXFTMEpSVFMwMGNtNU5jMVpUWm1jNVkyaEVlRU5TZEU1TGFRPT0=')),
@@ -1321,12 +1321,8 @@ document.getElementById('ep-save-btn').addEventListener('click', async () => {
             const safeName = decodeURIComponent(match[1].replace('_uploads/', ''))
             if (!safeName) return
 
-            const filePath = `${collection.collectionPath}/_uploads/${safeName}`
             try {
-                await collection.filesystem.deleteFile(
-                    filePath,
-                    `${collection.name}: remove upload ${safeName}`
-                )
+                await collection.deleteUpload(safeName)
             } catch (err) {
                 console.warn('Failed to delete obsolete upload:', err)
             }
@@ -1343,7 +1339,7 @@ document.getElementById('ep-save-btn').addEventListener('click', async () => {
         if (avatarFile) {
             btn.textContent = 'Uploading avatar…'
             const result  = await profilesCol.uploadFile(avatarFile, `avatar-${username}`)
-            const matches = await profilesCol.getFile(result.safeName)
+            const matches = await profilesCol.getUpload(result.safeName)
             avatarUrl = matches[0]?.url ?? rawUploadUrl(result.path)
             await deleteObsoleteUpload(profilesCol, currentProfile.avatar)
         }
@@ -1353,7 +1349,7 @@ document.getElementById('ep-save-btn').addEventListener('click', async () => {
         if (bannerFile) {
             btn.textContent = 'Uploading banner…'
             const result  = await profilesCol.uploadFile(bannerFile, `banner-${username}`)
-            const matches = await profilesCol.getFile(result.safeName)
+            const matches = await profilesCol.getUpload(result.safeName)
             bannerUrl = matches[0]?.url ?? rawUploadUrl(result.path)
             await deleteObsoleteUpload(profilesCol, currentProfile.banner)
         }
@@ -1480,7 +1476,7 @@ console.clear = () => { origClear(); warnDevTools() }
    Init
    ══════════════════════════════════════════════════════════════════ */
 async function init(cfg) {
-    if (!cfg.owner || !cfg.repo || !cfg.publicTokens?.length) {
+    if (!cfg.owner || !cfg.repo || !cfg.tokens?.length) {
         dom.feed.innerHTML = '<div class="empty">Configure your GitHub repo to get started.</div>'
         return
     }
@@ -1488,11 +1484,11 @@ async function init(cfg) {
     dom.feed.innerHTML = makeSkeleton(PAGE_SIZE)
 
     try {
-        database = await GitHubDB.public({
+        database = await GitHubDB.instance({
             owner:        cfg.owner,
             repo:         cfg.repo,
             rawBranches:  cfg.rawBranches,
-            publicTokens: cfg.publicTokens,
+            tokens:       cfg.tokens,
             useRaw:       cfg.useRaw ?? true,
         })
 

@@ -6,17 +6,12 @@
  *
  * ═══ QUICK START ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
  *
- *  Owner mode — your own PATs, full control:
- *    const db = await GitHubDB.owner({ owner, repo, tokens: ['ghp_token1', 'ghp_token2'] })
- *    const db = await GitHubDB.owner({ owner, repo, tokens, branch: 'main', rawBranches: ['master', 'backup'] })
- *    // rawBranches — array of branches used for raw reads; the one with the most recently updated file is used
- *
- *  Public mode — embed bot tokens so visitors can interact without their own PAT:
- *    const db = await GitHubDB.public({ owner, repo, publicTokens: ['ghdb_enc_...', 'ghdb_enc_...'] })
- *    const db = await GitHubDB.public({ owner, repo, publicTokens, branch, rawBranches, basePath, useRaw, enrollToken })
+ *  Create instance — embed bot tokens so visitors can interact without their own PAT:
+ *    const db = await GitHubDB.instance({ owner, repo, tokens: ['ghdb_enc_...', 'ghdb_enc_...'] })
+ *    const db = await GitHubDB.instance({ owner, repo, tokens, branch, rawBranches, basePath, useRaw })
  *
  *  Raw mode — recommended for public read-heavy apps (reads bypass API rate limits via raw.githubusercontent.com):
- *    const db = await GitHubDB.public({ ..., useRaw: true, branch: main })
+ *    const db = await GitHubDB.instance({ ..., useRaw: true, branch: main })
  *    // branch — branch used for GitHub API reads/writes and raw reads (default: 'main')
  *
  * ═══ PERMISSIONS ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
@@ -63,8 +58,9 @@
  *    await posts.bulkAdd([{ ... }, { ... }])                                           // add many
  *    await posts.bulkRemove([id1, id2])                                                // remove many
  *    await posts.uploadFile(fileBlob, 'avatar')                                        // upload a file
- *    await posts.getFile('2026-05-18-photo.jpg')                                       // exact -> array of matched
- *    await posts.getFile('photo')                                                      // partial -> array of matches
+ *    await posts.deleteUpload('2026-05-18-photo.jpg')                                  // delete an upload by safe name
+ *    await posts.getUpload('2026-05-18-photo.jpg')                                     // exact -> array of matched
+ *    await posts.getUpload('photo')                                                    // partial -> array of matches
  *    await posts.listUploads()                                                         // list all uploads
  *    await posts.clear()                                                               // delete all (irreversible)
  *    const stop = posts.subscribe(({ records, added, changed, removed }) => { }, 5000) // poll for changes
@@ -118,7 +114,7 @@
  * ═══ TOKEN ENCODING  (obfuscate a PAT before embedding in client-side code) ═════════════════════════════════════════════════════════════
  *
  *    const encoded = GitHubDB.encodeToken('ghp_myRealToken') // Note: obfuscation deters casual scraping only; it is not encryption.
- *    // Pass the encoded string as publicToken — the library decodes it automatically.
+ *    // Pass the encoded string as token — the library decodes it automatically.
  *
  * ═══ UTILITIES ══════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
  *
@@ -132,7 +128,7 @@
 
 // ═══ Constants ════════════════════════════════════════════════════════════════
 
-const DATABASE_VERSION    = '3.1.0'
+const DATABASE_VERSION    = '3.2.0-alpha-1'
 const GITHUB_API_BASE     = 'https://api.github.com'
 const RAW_GITHUB_BASE     = 'https://raw.githubusercontent.com'
 const GITHUB_API_VERSION  = '2026-03-10'
@@ -216,13 +212,13 @@ function assertValidId(id) {
 
 /**
  * Validates factory configuration to catch misconfigurations early.
- * @param {{owner:string, repo:string, branch:string, tokens?:string[], publicTokens?:string[], basePath:string}} config
+ * @param {{owner:string, repo:string, branch:string, tokens?:string[], basePath:string}} config
  */
-function assertValidConfig({ owner, repo, branch, tokens, publicTokens, basePath }) {
+function assertValidConfig({ owner, repo, branch, tokens, basePath }) {
   if (!owner || !repo || !branch) {
     throw new DatabaseError('owner, repo, and branch are required', 400)
   }
-  const tokenArray = tokens || publicTokens
+  const tokenArray = tokens
   if (!Array.isArray(tokenArray) || !tokenArray.length) {
     throw new DatabaseError('At least one token is required', 400)
   }
@@ -727,7 +723,7 @@ class GitHubFilesystem {
    */
   async apiRequest(url, init = { }) {
     const tried = new Set()
-    for (let attempt = 0; attempt < this.tokens.length + 1; attempt++) {
+    for (let attempt = 0; attempt < this.tokens.length; attempt++) {
       const token = this.pickToken(tried)
       if (!token) {
         throw new DatabaseError('GitHub API request failed: all tokens in the pool are rate-limited or invalid', 429)
@@ -744,7 +740,7 @@ class GitHubFilesystem {
 
       return response
     }
-    throw new DatabaseError('GitHub API request failed: all tokens exhausted', 429)
+    throw new DatabaseError('GitHub API request failed: all tokens in the pool are rate-limited or invalid', 429)
   }
 
   /**
@@ -821,19 +817,6 @@ class GitHubFilesystem {
    */
   async readFile(filePath, raw = false) {
     if (raw) {
-      if (this.rawBranches.length === 1) {
-        const encodedBranch = this.rawBranches[0].split('/').map(encodeURIComponent).join('/')
-        const encodedPath   = filePath.split('/').map(encodeURIComponent).join('/')
-        const encodedUrl    = `${RAW_GITHUB_BASE}/${encodeURIComponent(this.owner)}/${encodeURIComponent(this.repo)}/${encodedBranch}/${encodedPath}`
-        const response      = await fetch(encodedUrl, { cache: 'reload' })
-        if (response.status === 404) { return null }
-        if (!response.ok) { throw new DatabaseError(`Raw read failed (${response.status})`, response.status) }
-        try {
-          return await response.json()
-        } catch {
-          return null
-        }
-      }
       return this.fetchFreshestRaw(filePath)
     }
     const cached = this.etagCache.get(filePath)
@@ -847,7 +830,9 @@ class GitHubFilesystem {
 
     const data = await response.json()
     if (Array.isArray(data)) { return null }
-    const result = { content: decodeFileContent(data.content), sha: data.sha }
+    let parsedContent
+    try { parsedContent = decodeFileContent(data.content) } catch { parsedContent = null }
+    const result = { content: parsedContent, sha: data.sha }
     const etag = response.headers.get('etag')
     if (etag) {
       this.etagCache.set(filePath, { etag, data: result })
@@ -862,7 +847,7 @@ class GitHubFilesystem {
    */
     async readIndex(dirPath) {
       const data = await this.readFile(`${dirPath}/_index.json`, true)
-      return data || null
+      return data
     }
 
   /**
@@ -893,6 +878,7 @@ class GitHubFilesystem {
       content: encodeFileContent(content),
       branch:  this.branch,
     }
+    this.etagCache.delete(filePath)
     if (existingSha) body.sha = existingSha
 
     const response = await this.apiRequest(this.contentsUrl(filePath), {
@@ -918,6 +904,7 @@ class GitHubFilesystem {
       content: base64,
       branch:  this.branch,
     }
+    this.etagCache.delete(filePath)
     if (existingSha) body.sha = existingSha
 
     const response = await this.apiRequest(this.contentsUrl(filePath), {
@@ -936,19 +923,26 @@ class GitHubFilesystem {
    * @param   {string} commitMessage
    * @returns {Promise<boolean>}
    */
-  async deleteFile(filePath, commitMessage) {
-    const existing = await this.readFile(filePath)
-    if (!existing) { return false }
+  async deleteFile(filePath, commitMessage, existingSha) {
+      return retryOnConflict(async () => {
+        let sha = existingSha
+        if (!sha) {
+          this.etagCache.delete(filePath)
+          const existing = await this.readFile(filePath)
+          if (!existing) { return false }
+          sha = existing.sha
+        }
 
-    const response = await this.apiRequest(this.contentsUrl(filePath), {
-      method: 'DELETE',
-      body:   JSON.stringify({ message: commitMessage, sha: existing.sha, branch: this.branch }),
-    })
+        const response = await this.apiRequest(this.contentsUrl(filePath), {
+          method: 'DELETE',
+          body:   JSON.stringify({ message: commitMessage, sha, branch: this.branch }),
+        })
 
-    if (!response.ok) { await this.throwApiError(response, `Delete failed (${response.status})`) }
-    return true
-  }
-
+        if (!response.ok) { await this.throwApiError(response, `Delete failed (${response.status})`) }
+        return true
+      })
+    }
+    
   /**
    * List the direct children of a directory.  
    * Uses ETags to avoid redundant API calls on unchanged directories.  
@@ -1210,9 +1204,6 @@ class Collection {
    */
   async remove(id) {
     this.checkPermission('write', id)
-    if (id.startsWith('_')) {
-      throw new DatabaseError(`Cannot delete internal file: ${id}.json`, 403)
-    }
     const deleted = await this.filesystem.deleteFile(this.filePathForId(id), `${this.name}: remove ${id}`)
     return { id, deleted }
   }
@@ -1260,8 +1251,17 @@ class Collection {
    * @returns {Promise<object[]>}
    */
   async query(filterFn, { sort, limit, offset = 0 } = { }) {
+    this.checkPermission('read')
+
+    let entries = (await this.listEntries(this.collectionPath))
+      .filter(entry => entry.type === 'file' && !entry.name.startsWith('_') && entry.name.endsWith('.json'))
+
     if (sort) {
-      let results = (await this.list()).filter(filterFn).sort(sort)
+      const records = (await runConcurrently(entries, entry =>
+        this.readRecord(`${this.collectionPath}/${entry.name}`)
+      )).filter(Boolean)
+
+      let results = records.filter(filterFn).sort(sort)
       if (offset > 0)                           { results = results.slice(offset) }
       if (Number.isInteger(limit) && limit > 0) { results = results.slice(0, limit) }
       return results
@@ -1270,18 +1270,18 @@ class Collection {
     const results = []
     let skipped   = 0
 
-    for (let batchOffset = 0; ; batchOffset += QUERY_BATCH_SIZE) {
-      const batch = await this.list({ limit: QUERY_BATCH_SIZE, offset: batchOffset })
-      if (batch.length === 0) { break }
+    for (let index = 0; index < entries.length; index += QUERY_BATCH_SIZE) {
+      const batchEntries = entries.slice(index, index + QUERY_BATCH_SIZE)
+      const batchRecords = (await runConcurrently(batchEntries, entry =>
+        this.readRecord(`${this.collectionPath}/${entry.name}`)
+      )).filter(Boolean)
 
-      for (const record of batch) {
+      for (const record of batchRecords) {
         if (!filterFn(record)) { continue }
         if (skipped < offset)  { skipped++; continue }
         results.push(record)
         if (Number.isInteger(limit) && results.length >= limit) { return results }
       }
-
-      if (batch.length < QUERY_BATCH_SIZE) { break }
     }
 
     return results
@@ -1377,16 +1377,17 @@ class Collection {
    * @param   {string}    [fileName] Logical name / tag for this upload (e.g. 'avatar').
    * @returns {Promise<{ path: string, safeName: string, originalName: string, tag: string }>}
    */
-  async uploadFile(fileData, fileName = '') {
+  async uploadFile(fileData, fileName = '') { // didn't wanna use uploadUpload()
     this.checkPermission('write')
-    const base64   = await fileToBase64(fileData)
-    const tag      = fileName || fileData.name || 'upload'
-    const safeName = `${Date.now()}-${(fileData.name ?? tag).replace(/\s+/g, '_')}`
-    const filePath = `${this.collectionPath}/_uploads/${safeName}`
+    const base64     = await fileToBase64(fileData)
+    const name       = fileName || fileData.name || 'upload'
+    const extension  = (fileData.name ?? '').match(/\.[^.]+$/)?.[0] ?? ''
+    const safeName   = `${Date.now()}-${name.replace(/\s+/g, '_')}${extension}`
+    const uploadPath = `${this.collectionPath}/_uploads/${safeName}`
 
-    await this.filesystem.writeRawFile(filePath, base64, `${this.name}: upload ${safeName}`)
+    await this.filesystem.writeRawFile(uploadPath, base64, `${this.name}: upload ${safeName}`)
 
-    return { path: filePath, safeName, originalName: fileData.name ?? tag, tag }
+    return { path: uploadPath, safeName, originalName: fileData.name ?? name, tag: name }
   }
 
   /**
@@ -1394,24 +1395,24 @@ class Collection {
    * - Exact match on `safeName` -> returns the URL string directly.
    * - Partial match (e.g. 'photo') -> returns an array of `{ safeName, url }`.
    * @param   {string} name
-   * @returns {Promise<Array<{safeName: string, url: string}>>}
+   * @returns {Promise<string|Array<{safeName: string, url: string}>>}
    */
-  async getFile(name) {
+  async getUpload(name) {
     this.checkPermission('read')
     const indexPath = `${this.collectionPath}/_uploads/_index.json`
     const index     = await this.filesystem.readFile(indexPath, this.useRaw)
     if (!index) { return [] }
 
-    const files   = (this.useRaw ? index : index.content).files ?? []
-    const rawBase = `${RAW_GITHUB_BASE}/${this.filesystem.owner}/${this.filesystem.repo}/${this.filesystem.rawBranches[0] || this.filesystem.branch}`
+    const uploads = (this.useRaw ? index : index.content).files ?? []
+    const rawBase = `${RAW_GITHUB_BASE}/${this.filesystem.owner}/${this.filesystem.repo}/${this.filesystem.branch}`
     const toUrl   = safeName => `${rawBase}/${this.collectionPath}/_uploads/${safeName}`
 
-    const exact = files.find(file => file === name)
-    if (exact) { return [{ safeName: exact, url: toUrl(exact) }] }
+    const exact = uploads.find(upload => upload === name)
+    if (exact) { return toUrl(exact) }
 
-    const matches = files.filter(file => {
-      const base  = file.replace(/^\d+-/, '')
-      return base.includes(name)
+    const matches = uploads.filter(upload => {
+      const base = upload.replace(/^\d+-/, '')
+      return upload.includes(name) || base.includes(name)
     })
     return matches.map(safeName => ({ safeName, url: toUrl(safeName) }))
   }
@@ -1423,8 +1424,27 @@ class Collection {
   async listUploads() {
     this.checkPermission('read')
     const indexPath = `${this.collectionPath}/_uploads/_index.json`
-    const file      = await this.filesystem.readFile(indexPath, this.useRaw)
-    return file ? (this.useRaw ? file.files : file.content.files) : []
+    const uploads   = await this.filesystem.readFile(indexPath, this.useRaw)
+    return uploads ? (this.useRaw ? uploads.files : uploads.content.files) : []
+  }
+
+  /**
+   * Delete an uploaded file by its safeName from this collection's `_uploads` folder.
+   * @param   {string} safeName
+   * @returns {Promise<{ safeName: string, deleted: boolean }>} 
+   */
+  async deleteUpload(safeName) {
+    this.checkPermission('write')
+    if (typeof safeName !== 'string' || !safeName) {
+      throw new DatabaseError('File name is required', 400)
+    }
+
+    const uploadPath = `${this.collectionPath}/_uploads/${safeName}`
+    const deleted = await this.filesystem.deleteFile(uploadPath, `${this.name}: delete upload ${safeName}`)
+    if (!deleted) {
+      throw new DatabaseError(`Upload not found: ${safeName}`, 404)
+    }
+    return { safeName, deleted }
   }
 
   // ══ Polling ═══════════════════════════════════════════════════════════════════
@@ -1640,10 +1660,16 @@ class KeyValueStore {
 
     const pairs = await runConcurrently(jsonFiles, async entry => {
       const key = entry.name.replace(/\.json$/, '')
-      return [key, await this.get(key)]
+      try {
+        const value = await this.get(key)
+        return [key, value]
+      } catch (error) {
+        if (error.httpStatus === 401 || error.httpStatus === 403) return null
+        throw error
+      }
     })
 
-    return Object.fromEntries(pairs)
+    return Object.fromEntries(pairs.filter(Boolean))
   }
 
   // ══ Polling ═══════════════════════════════════════════════════════════════════
@@ -1973,21 +1999,24 @@ class AuthManager {
       this.assertOwnershipOrAdmin(username, 'delete account')
     }
 
-    const file = await this.filesystem.readFile(this.userFilePath(username))
-    if (!file) {
-      throw new DatabaseError('User not found', 404)
-    }
+    let passwordVerified = false
 
-    if (!isAdmin) {
-      const isValidPassword = await verifySecret(password, file.content.passwordHash, username.toLowerCase(), this.pepper)
-      if (!isValidPassword) {
-        throw new DatabaseError('Incorrect password', 401)
+    await retryOnConflict(async () => {
+      const file = await this.filesystem.readFile(this.userFilePath(username))
+      if (!file) {
+        throw new DatabaseError('User not found', 404)
       }
-    }
 
-    await retryOnConflict(() =>
-      this.filesystem.deleteFile(this.userFilePath(username), `auth: delete account ${username}`)
-    )
+      if (!isAdmin && !passwordVerified) {
+        const isValidPassword = await verifySecret(password, file.content.passwordHash, username.toLowerCase(), this.pepper)
+        if (!isValidPassword) {
+          throw new DatabaseError('Incorrect password', 401)
+        }
+        passwordVerified = true
+      }
+
+      await this.filesystem.deleteFile(this.userFilePath(username), `auth: delete account ${username}`, file.sha)
+    })
 
     if (this.session.currentUser?.username?.toLowerCase() === username.toLowerCase()) this.session.clearSession()
     return { deleted: true }
@@ -2044,12 +2073,11 @@ class AuthManager {
 
 /**
  * The main entry point.  
- * Use the static factory methods to create an instance:  
- * `GitHubDB.owner()` or `GitHubDB.public()`
+ * Use the static factory method to create an instance:  
+ * `GitHubDB.instance()`
  *
  * @example
- * const db = await GitHubDB.owner({ owner: 'you', repo: 'my-db', token: 'ghp_...' })
- * const db = await GitHubDB.public({ owner: 'you', repo: 'my-db', publicToken: 'ghdb_enc_...' })
+ * const db = await GitHubDB.instance({ owner: 'you', repo: 'my-db', tokens: ['ghdb_enc_...'] })
  */
 class GitHubDB {
   /**
@@ -2057,14 +2085,12 @@ class GitHubDB {
    * @param {object}           [options]
    * @param {string}           [options.basePath='data']
    * @param {boolean}          [options.useRaw=true]
-   * @param {boolean}          [options.enrollToken=true]       Set `false` to skip public-token registration.
    * @param {string}           [options.pepper=PASSWORD_PEPPER] Optional custom password pepper.
    */
-  constructor(filesystem, { basePath = 'data', useRaw = true, enrollToken = true, pepper = PASSWORD_PEPPER } = { }) {
+  constructor(filesystem, { basePath = 'data', useRaw = true, pepper = PASSWORD_PEPPER } = { }) {
     this.filesystem     = filesystem
     this.basePath       = basePath.replace(/^\/+|\/+$/g, '').replace(/\/+/g, '/')
     this.useRaw         = useRaw
-    this.enrollToken    = enrollToken
     this.pepper         = pepper
     this.session        = new SessionState()
     this.permissionsMap = null
@@ -2078,10 +2104,8 @@ class GitHubDB {
   // ══ ORIGIN CHECKING ═══════════════════════════════════════════════════════════
 
   /** 
-   * **CLAUDE told me to add it so here: tHis is jUSt a BeSt eFfoRT fiNgErprinT, nOt sEcuRITy.**
-   * 
    * Check if the current origin is allowed by comparing to the `_origins` key value.  
-   * Called automatically by `GitHubDB.public()` and `GitHubDB.owner()`.  
+   * Called automatically by `GitHubDB.instance()`.  
    * Auto-registers the current origin on first run.
    * @throws {DatabaseError} If the current origin is not in `_origins` and cannot be auto-registered.
    */
@@ -2115,90 +2139,22 @@ class GitHubDB {
     if (!allowed) throw new DatabaseError(`Origin not allowed. Add this to _origins: "${origin}"`)
   }
 
-  // ══ Public-Token Registry ═════════════════════════════════════════════════════
+  // ══ Static Factory Method ═════════════════════════════════════════════════════
 
   /**
-   * Register `passedToken` in the `_kv/_public` list if not already present.  
-   * Called automatically by `GitHubDB.public()`.
-   * @param {string} passedToken The token as originally passed by the caller.
-   */
-  async enrollPublicToken(passedToken) {
-    if (!this.enrollToken) { return }
-    const encodedForm = passedToken.startsWith(ENCODE_PREFIX) ? passedToken : encodeToken(passedToken)
-    const publicPath  = `${this.basePath}/_kv/_public.json`
-
-    const rawData = await this.filesystem.readFile(publicPath, true)
-    if (rawData?.value?.includes(encodedForm)) { return }
-
-    return retryOnConflict(async () => {
-      const file = await this.filesystem.readFile(publicPath)
-      const list = file ? (file.content?.value ?? []) : []
-      if (list.includes(encodedForm)) { return } // race condition guard
-
-      await this.filesystem.writeFile(
-        publicPath,
-        { key: '_public', value: [...list, encodedForm], updatedAt: new Date().toISOString() },
-        'kv: set _public',
-        file?.sha
-      )
-    })
-  }
-
-  /**
-   * Throw a DatabaseError if `passedToken` matches any entry in the `_kv/_public` list.
-   * @param {string} passedToken
-   */
-  async assertNotPublicToken(passedToken) {
-    const raw   = await this.filesystem.readFile(`${this.basePath}/_kv/_public.json`, true)
-    const list  = raw?.value ?? []
-    const plain = resolveToken(passedToken)
-
-    for (const entry of list) {
-      if (resolveToken(entry) === plain) {
-        throw new DatabaseError('Public tokens cannot be used for admin login', 403)
-      }
-    }
-  }
-
-  // ══ Static Factory Methods ════════════════════════════════════════════════════
-
-  /**
-   * **Owner mode** — use your personal PAT (or a pool of PATs). Full access to the repo.  
-   * Rejects if the supplied token matches a known public token.
+   * **GHDB instance** — embed a bot token (or pool of tokens) so any visitor can read/write without their own PAT.
    * @param   {{ owner: string, repo: string, tokens: string[], branch?: string, rawBranches?: string[], basePath?: string, useRaw?: boolean, pepper?: string }} config
    * @returns {Promise<GitHubDB>}
    */
-  static async owner({ owner, repo, tokens, branch = 'main', rawBranches = null, basePath = 'data', useRaw = true, pepper = PASSWORD_PEPPER }) {
+  static async instance({ owner, repo, tokens, branch = 'main', rawBranches = null, basePath = 'data', useRaw = true, pepper = PASSWORD_PEPPER }) {
     assertValidConfig({ owner, repo, branch, tokens, basePath })
-    tokens = tokens.map(resolveToken)
-    const database = new GitHubDB(
-      new GitHubFilesystem({ owner, repo, tokens, branch, rawBranches }),
-      { basePath, useRaw, enrollToken: false, pepper }
-    )
-    for (const token of tokens) await database.assertNotPublicToken(token)
-    await database.checkOrigins()
-    await installWorkflow(owner, repo, tokens, basePath)
-    return database
-  }
-
-  /**
-   * **Public mode** — embed a bot token (or pool of tokens) so any visitor can read/write without their own PAT.  
-   * On first use each token is registered in the `_kv/_public` list (unless `enrollToken` is `false`).
-   * @param   {{ owner: string, repo: string, publicTokens: string[], branch?: string, rawBranches?: string[], basePath?: string, useRaw?: boolean, enrollToken?: boolean, pepper?: string }} config
-   * @returns {Promise<GitHubDB>}
-   */
-  static async public({ owner, repo, publicTokens, branch = 'main', rawBranches = null, basePath = 'data', useRaw = true, enrollToken = true, pepper = PASSWORD_PEPPER }) {
-    assertValidConfig({ owner, repo, branch, publicTokens, basePath })
-    const resolvedTokens = publicTokens.map(resolveToken)
+    const resolvedTokens = tokens.map(resolveToken)
     const database = new GitHubDB(
       new GitHubFilesystem({ owner, repo, tokens: resolvedTokens, branch, rawBranches }),
-      { basePath, useRaw, enrollToken, pepper }
+      { basePath, useRaw, pepper }
     )
-    await Promise.all(publicTokens.map(token => database.enrollPublicToken(token).catch(error => {
-      console.warn('[GitHubDB] Could not enroll public token:', error)
-    })))
     await database.checkOrigins()
-    await installWorkflow(owner, repo, publicTokens, basePath)
+    await installWorkflow(owner, repo, tokens, basePath)
     return database
   }
 
@@ -2293,7 +2249,7 @@ class GitHubDB {
 
   /**
    * Obfuscate a plain PAT for safe embedding in public client-side code.  
-   * Pass the result as `publicToken` — the library decodes it automatically.
+   * Pass the result as `token` — the library decodes it automatically.
    * @param   {string} plainToken
    * @returns {string}
    */
