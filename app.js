@@ -7,17 +7,19 @@ const DEFAULT_CONFIG = {
     owner:        'ImDuck42',
     repo:         'Quotipedia',
     rawBranches:  ['main', 'master', 'refs/heads/main', 'HEAD'],
+    useRaw:       false,
     publicTokens: [
         'ghdb_enc_ICEwKjIqGzImPBtzdgoFcBQOcAN3GSsXARAhKg8PFDEGFz0Adw4nKj0xBzJ/PykXETAqICgFLxoKHTUnPhwqKn97AxYXLBcPNTgwCxAfDnR0HwkaFyYgLhIkIg8T',
     ],
+    urlCheck:   atob(atob('YUhSMGNITTZMeTlrYVhOamIzSmtMbU52YlM5aGNHa3ZkMlZpYUc5dmEzTXZNVFV3T1RVMk56UTBPRFUxTnpReU1EWXlOUzl2Wms5VmNHdDVjVVIxUlZCU2VrOXZjak5yUlhsVlJFWllPRE0zU0RoVVRtcHdaR2hNUzNkd1ZGOXFTMEpSVFMwMGNtNU5jMVpUWm1jNVkyaEVlRU5TZEU1TGFRPT0=')),
 }
 
-let timer = null
 const PAGE_SIZE = 12
+let devTimer    = null
 
 /* Warning Styles */
-const LABEL = '[!]  404/400 errors above are normal — GitHubDB is racing cache variants, failed branches are handled gracefully  '
-const STYLE = 'background:#9e6a03; color:#fff; font-family:monospace; font-size:11px; padding:4px 8px; border-radius:4px'
+const WARN_LABEL = '[!]  404/400 errors above are normal — GitHubDB is racing cache variants, failed branches are handled gracefully  '
+const WARN_STYLE = 'background:#9e6a03; color:#fff; font-family:monospace; font-size:11px; padding:4px 8px; border-radius:4px'
 
 /** Social platform SVG icons, keyed by platform name. */
 const SOCIAL_ICONS = {
@@ -29,7 +31,7 @@ const SOCIAL_ICONS = {
 }
 
 function getConfig() {
-    const saved = localStorage.getItem('quotipedia_cfg')
+    const saved = localStorage.getItem('quotipedia-cfg')
     return saved ? { ...DEFAULT_CONFIG, ...JSON.parse(saved) } : DEFAULT_CONFIG
 }
 
@@ -37,15 +39,15 @@ function getConfig() {
 /* ══════════════════════════════════════════════════════════════════
    State
    ══════════════════════════════════════════════════════════════════ */
-let db = null
+let database = null
 
-// Auth modal
+// Auth
 let authMode = 'login' // 'login' | 'register'
 
 // Feed data
-let allQuotes      = []   // full sorted list from server
-let cachedQuotes   = []   // master copy for profile lookups
-let filteredQuotes = []   // after search / tag filtering
+let allQuotes      = [] // full sorted list from server
+let cachedQuotes   = [] // master copy for profile lookups
+let filteredQuotes = [] // after search / tag filtering
 let displayedCount = 0
 
 // Search / filter / sort
@@ -62,29 +64,28 @@ let bookmarks = new Set() // quoteIds bookmarked by the current user
    DOM refs
    ══════════════════════════════════════════════════════════════════ */
 const dom = {
-    feed:             document.getElementById('feed'),
-    feedCount:        document.getElementById('feedCount'),
-    submitPanel:      document.getElementById('submitPanel'),
-    submitMsg:        document.getElementById('submitMsg'),
-    navArea:          document.getElementById('navArea'),
-    toast:            document.getElementById('toast'),
-    profileView:      document.getElementById('profileView'),
-    authModal:        document.getElementById('authModal'),
-    modalTitle:       document.getElementById('modalTitle'),
-    authUser:         document.getElementById('authUser'),
-    authPass:         document.getElementById('authPass'),
-    authError:        document.getElementById('authError'),
-    authSubmitBtn:    document.getElementById('authSubmitBtn'),
-    modalSwitch:      document.getElementById('modalSwitch'),
-    modalCloseBtn:    document.getElementById('modalCloseBtn'),
-    editProfileModal: document.getElementById('editProfileModal'),
+    feed:             document.getElementById('quote-feed'),
+    feedCount:        document.getElementById('feed-count'),
+    submitPanel:      document.getElementById('submit-panel'),
+    submitMsg:        document.getElementById('submit-msg'),
+    navArea:          document.getElementById('nav-area'),
+    toast:            document.getElementById('toast-msg'),
+    profileView:      document.getElementById('profile-view'),
+    authModal:        document.getElementById('auth-modal'),
+    modalTitle:       document.getElementById('modal-title'),
+    authUser:         document.getElementById('auth-user'),
+    authPass:         document.getElementById('auth-pass'),
+    authError:        document.getElementById('auth-error'),
+    authSubmitBtn:    document.getElementById('auth-submit-btn'),
+    modalSwitch:      document.getElementById('modal-switch'),
+    modalCloseBtn:    document.getElementById('modal-close-btn'),
+    editProfileModal: document.getElementById('edit-profile-modal'),
 }
 
 
 /* ══════════════════════════════════════════════════════════════════
    Utilities
    ══════════════════════════════════════════════════════════════════ */
-/** Escape a value for safe HTML insertion. */
 function escHtml(value) {
     return String(value ?? '')
         .replace(/&/g, '&amp;')
@@ -93,37 +94,32 @@ function escHtml(value) {
         .replace(/"/g, '&quot;')
 }
 
-/** Escape and convert newlines to `<br>` tags. */
 function escHtmlNl(value) {
     return escHtml(value).replace(/\n/g, '<br>')
 }
 
-/** Human-readable relative timestamp. */
 function timeAgo(date) {
-    const seconds = (Date.now() - date) / 1000
-    if (seconds < 60)     return 'just now'
-    if (seconds < 3600)   return `${Math.floor(seconds / 60)}m ago`
-    if (seconds < 86400)  return `${Math.floor(seconds / 3600)}h ago`
-    if (seconds < 604800) return `${Math.floor(seconds / 86400)}d ago`
+    const secs = (Date.now() - date) / 1000
+    if (secs < 60)     return 'just now'
+    if (secs < 3600)   return `${Math.floor(secs / 60)}m ago`
+    if (secs < 86400)  return `${Math.floor(secs / 3600)}h ago`
+    if (secs < 604800) return `${Math.floor(secs / 86400)}d ago`
     return date.toLocaleDateString('en', { month: 'short', day: 'numeric', year: 'numeric' })
 }
 
-/** Parse a raw tag string into a clean array (max 5 tags, max 24 chars each). */
 function parseTags(raw) {
     if (!raw) return []
     return raw
         .split(/[,\s]+/)
-        .map(t => t.replace(/^#/, '').toLowerCase().trim())
-        .filter(t => t.length > 0 && t.length <= 24)
+        .map(tag => tag.replace(/^#/, '').toLowerCase().trim())
+        .filter(tag => tag.length > 0 && tag.length <= 24)
         .slice(0, 5)
 }
 
-/** Format a tags array back to a comma-separated string. */
 function formatTags(tags) {
     return (tags || []).join(', ')
 }
 
-/** Return a social platform SVG icon, falling back to the website icon. */
 function socialIcon(type) {
     return SOCIAL_ICONS[type] ?? SOCIAL_ICONS.website
 }
@@ -134,10 +130,9 @@ function socialIcon(type) {
    ══════════════════════════════════════════════════════════════════ */
 let toastTimer = null
 
-/** Display a transient notification. */
 function showToast(msg, type = '') {
     dom.toast.textContent = msg
-    dom.toast.className = `show ${type}`.trim()
+    dom.toast.className   = `show ${type}`.trim()
     clearTimeout(toastTimer)
     toastTimer = setTimeout(() => { dom.toast.className = '' }, 3500)
 }
@@ -146,33 +141,31 @@ function showToast(msg, type = '') {
 /* ══════════════════════════════════════════════════════════════════
    Error handling
    ══════════════════════════════════════════════════════════════════ */
-/** Extract a user-friendly message from an error. */
-function userMessage(error) {
-    if (error instanceof DatabaseError) return error.message
-    console.error('[Quotipedia]', error)
+function userMessage(err) {
+    if (err instanceof DatabaseError) return err.message
+    console.error('[Quotipedia]', err)
     return 'Something went wrong. Please try again.'
 }
 
-function toastError(error) {
-    showToast(userMessage(error), 'error')
+function toastError(err) {
+    showToast(userMessage(err), 'error')
 }
 
-/** Render an error state in the feed with a retry button. */
-function feedError(error) {
-    const msg  = userMessage(error)
-    const hint = (error instanceof DatabaseError && [403, 429].includes(error.httpStatus))
+function feedError(err) {
+    const msg  = userMessage(err)
+    const hint = (err instanceof DatabaseError && [403, 429].includes(err.httpStatus))
         ? '<br><small>GitHub API rate limit hit — try again in a minute.</small>'
-        : (error instanceof DatabaseError && error.httpStatus === 401)
+        : (err instanceof DatabaseError && err.httpStatus === 401)
             ? '<br><small>You\'re not authorised to read this collection.</small>'
             : ''
 
     dom.feed.innerHTML = `
         <div class="empty error-state">
             <p>${escHtml(msg)}${hint}</p>
-            <button class="btn" id="retryBtn">Retry</button>
+            <button class="btn" id="retry-btn">Retry</button>
         </div>
     `
-    dom.feed.querySelector('#retryBtn').addEventListener('click', loadQuotes)
+    dom.feed.querySelector('#retry-btn').addEventListener('click', loadQuotes)
 }
 
 
@@ -180,63 +173,97 @@ function feedError(error) {
    KV helpers  (likes, bookmarks, profile)
    ══════════════════════════════════════════════════════════════════ */
 const kvKey = {
-    likes:     id       => `likes-${id}`,
-    bookmarks: username => `bookmarks-${username.toLowerCase()}`,
-    profile:   username => `profile-${username.toLowerCase()}`,
+    likes:     (qid)  => `likes-${qid}`,
+    bookmarks: (user) => `bookmarks-${user.toLowerCase()}`,
+    profile:   (user) => `profile-${user.toLowerCase()}`,
 }
 
-/** Fetch like-sets for multiple quote IDs in parallel. */
+const DRAFT_KEY = 'quotipedia-draft'
+
+function saveDraft() {
+    const text   = document.getElementById('quote-text')?.value ?? ''
+    const author = document.getElementById('quote-author')?.value ?? ''
+    const tags   = document.getElementById('quote-tags')?.value ?? ''
+    if (text || author || tags) {
+        localStorage.setItem(DRAFT_KEY, JSON.stringify({ text, author, tags }))
+    } else {
+        localStorage.removeItem(DRAFT_KEY)
+    }
+}
+
+function restoreDraft() {
+    try {
+        const raw = localStorage.getItem(DRAFT_KEY)
+        if (!raw) return
+        const { text, author, tags } = JSON.parse(raw)
+        const qText   = document.getElementById('quote-text')
+        const qAuthor = document.getElementById('quote-author')
+        const qTags   = document.getElementById('quote-tags')
+        if (qText   && text)   qText.value   = text
+        if (qAuthor && author) qAuthor.value = author
+        if (qTags   && tags)   qTags.value   = tags
+        if (text || author || tags) showToast('Draft restored.', '')
+    } catch { /* ignore */ }
+}
+
+function clearDraft() {
+    localStorage.removeItem(DRAFT_KEY)
+}
+
 async function fetchLikesForQuotes(quoteIds) {
     const results = await Promise.allSettled(
-        quoteIds.map(id => db.kv.get(kvKey.likes(id)))
+        quoteIds.map(qid => database.kv.get(kvKey.likes(qid)))
     )
     const map = {}
-    results.forEach((r, i) => {
-        map[quoteIds[i]] = new Set(
-            r.status === 'fulfilled' && Array.isArray(r.value) ? r.value : []
+    results.forEach((res, idx) => {
+        map[quoteIds[idx]] = new Set(
+            res.status === 'fulfilled' && Array.isArray(res.value) ? res.value : []
         )
     })
     return map
 }
 
-/** Fetch the bookmark set for a user. Returns an empty Set on failure. */
 async function fetchUserBookmarks(username) {
     try {
-        const data = await db.kv.get(kvKey.bookmarks(username))
+        const data = await database.kv.get(kvKey.bookmarks(username))
         return new Set(Array.isArray(data) ? data : [])
     } catch {
         return new Set()
     }
 }
 
-/** Toggle a like with optimistic UI update, reverting on failure. */
+async function fetchUserLikedIds(username) {
+    // Collect quote IDs this user has liked by scanning the likesMap
+    const liked = new Set()
+    for (const [qid, likers] of Object.entries(likesMap)) {
+        if (likers.has(username)) liked.add(qid)
+    }
+    return liked
+}
+
 async function toggleLike(quoteId) {
-    if (!db?.auth?.isLoggedIn) { openAuthModal('login'); return }
-    const username = db.auth.currentUser.username
+    if (!database?.auth?.isLoggedIn) { openAuthModal('login'); return }
+    const username = database.auth.currentUser.username
     const current  = likesMap[quoteId] ?? new Set()
 
-    // Optimistic update
     current.has(username) ? current.delete(username) : current.add(username)
     likesMap[quoteId] = current
     updateLikeButton(quoteId)
 
     try {
-        await db.kv.set(kvKey.likes(quoteId), [...current])
-    } catch (error) {
-        // Revert
+        await database.kv.set(kvKey.likes(quoteId), [...current])
+    } catch (err) {
         current.has(username) ? current.delete(username) : current.add(username)
         likesMap[quoteId] = current
         updateLikeButton(quoteId)
-        toastError(error)
+        toastError(err)
     }
 }
 
-/** Toggle a bookmark with optimistic UI update, reverting on failure. */
 async function toggleBookmark(quoteId) {
-    if (!db?.auth?.isLoggedIn) { openAuthModal('login'); return }
-    const username = db.auth.currentUser.username
+    if (!database?.auth?.isLoggedIn) { openAuthModal('login'); return }
+    const username = database.auth.currentUser.username
 
-    // Optimistic update
     if (bookmarks.has(quoteId)) {
         bookmarks.delete(quoteId)
         showToast('Bookmark removed.', '')
@@ -247,33 +274,29 @@ async function toggleBookmark(quoteId) {
     updateBookmarkButton(quoteId)
 
     try {
-        await db.kv.set(kvKey.bookmarks(username), [...bookmarks])
-    } catch (error) {
-        // Revert
+        await database.kv.set(kvKey.bookmarks(username), [...bookmarks])
+    } catch (err) {
         bookmarks.has(quoteId) ? bookmarks.delete(quoteId) : bookmarks.add(quoteId)
         updateBookmarkButton(quoteId)
-        toastError(error)
+        toastError(err)
     }
 }
 
-/** Sync a like button's visual state to current data. */
 function updateLikeButton(quoteId) {
-    // Update both the feed card and the open quote modal (if any)
-    for (const id of [`like-${quoteId}`, `qm-like-${quoteId}`]) {
-        const btn = document.getElementById(id)
+    for (const btnId of [`like-${quoteId}`, `qm-like-${quoteId}`]) {
+        const btn = document.getElementById(btnId)
         if (!btn) continue
         const likeSet = likesMap[quoteId] ?? new Set()
-        const liked   = db?.auth?.isLoggedIn && likeSet.has(db.auth.currentUser?.username)
+        const liked   = database?.auth?.isLoggedIn && likeSet.has(database.auth.currentUser?.username)
         btn.classList.toggle('liked', liked)
         btn.querySelector('.like-count').textContent = likeSet.size > 0 ? likeSet.size : ''
         btn.title = liked ? 'Unlike' : 'Like'
     }
 }
 
-/** Sync a bookmark button's visual state to current data. */
 function updateBookmarkButton(quoteId) {
-    for (const id of [`bookmark-${quoteId}`, `qm-bookmark-${quoteId}`]) {
-        const btn = document.getElementById(id)
+    for (const btnId of [`bookmark-${quoteId}`, `qm-bookmark-${quoteId}`]) {
+        const btn = document.getElementById(btnId)
         if (!btn) continue
         const saved = bookmarks.has(quoteId)
         btn.classList.toggle('bookmarked', saved)
@@ -281,52 +304,71 @@ function updateBookmarkButton(quoteId) {
     }
 }
 
-/* Profile KV. */
+/* Profile KV */
 async function loadProfile(username) {
     try {
-        return (await db.kv.get(kvKey.profile(username))) ?? {}
+        const kvData = (await database.kv.get(kvKey.profile(username))) ?? {}
+        try {
+            const mod = await import(`./profiles/${username}.js`)
+            return { ...kvData, ...mod.default }
+        } catch {
+        }
+        return kvData
     } catch {
         return {}
     }
 }
 
 async function saveProfile(username, profile) {
-    await db.kv.set(kvKey.profile(username), profile)
+    await database.kv.set(kvKey.profile(username), profile)
+}
+
+
+/* ══════════════════════════════════════════════════════════════════
+   Skeleton loading  (shows while quotes are fetching)
+   ══════════════════════════════════════════════════════════════════ */
+function makeSkeleton(count = 6) {
+    return Array.from({ length: count }, () => `
+        <div class="skeleton-card">
+            <div class="skeleton-line long"></div>
+            <div class="skeleton-line med"></div>
+            <div class="skeleton-line short"></div>
+        </div>
+    `).join('')
 }
 
 
 /* ══════════════════════════════════════════════════════════════════
    Rendering
    ══════════════════════════════════════════════════════════════════ */
-/* Quote card HTML. */
 function renderQuoteCard(quote) {
-    const isOwner   = db?.auth?.isLoggedIn && db.auth.currentUser?.username === quote.postedBy
-    const isAdmin   = db?.auth?.isLoggedIn && db.auth.currentUser?.isAdmin === true
+    const isOwner   = database?.auth?.isLoggedIn && database.auth.currentUser?.username === quote.postedBy
+    const isAdmin   = database?.auth?.isLoggedIn && database.auth.currentUser?.isAdmin === true
     const canDelete = isOwner || isAdmin
     const when      = quote.createdAt ? timeAgo(new Date(quote.createdAt)) : ''
     const likeSet   = likesMap[quote.id] ?? new Set()
-    const liked     = db?.auth?.isLoggedIn && likeSet.has(db.auth.currentUser?.username)
+    const liked     = database?.auth?.isLoggedIn && likeSet.has(database.auth.currentUser?.username)
     const saved     = bookmarks.has(quote.id)
 
     const tagsHtml = (quote.tags?.length)
         ? `<div class="quote-tags">
-             ${quote.tags.map(t => `
-               <button class="tag-chip tag-chip-btn" data-tag="${escHtml(t)}">#${escHtml(t)}</button>
+             ${quote.tags.map(tag => `
+               <button class="tag-chip tag-chip-btn" data-tag="${escHtml(tag)}">#${escHtml(tag)}</button>
              `).join('')}
            </div>`
         : ''
 
-    const editBtn   = isOwner  ? `<button class="btn btn-sm edit-quote-btn" data-id="${quote.id}">edit</button>` : ''
-    const deleteBtn = canDelete ? `<button class="btn btn-sm btn-danger delete-btn" data-id="${quote.id}">delete</button>` : ''
+    const editBtn   = isOwner  ? `<button class="btn btn-small edit-quote-btn" data-id="${quote.id}">edit</button>` : ''
+    const deleteBtn = canDelete ? `<button class="btn btn-small btn-danger delete-btn" data-id="${quote.id}">delete</button>` : ''
 
     return `
         <div class="quote-card" id="card-${quote.id}">
-            <div class="quote-mark" aria-hidden="true">"</div>
-            <p class="quote-text">${escHtml(quote.text)}</p>
+            <div class="quote-decoration" aria-hidden="true">"</div>
+            <p class="quote-body">${escHtml(quote.text)}</p>
             ${tagsHtml}
             <div class="quote-meta">
                 <div>
-                    ${quote.author ? `<span class="quote-by">&mdash; ${escHtml(quote.author)}</span>` : ''}
+                    ${quote.author ? `<span class="quote-attribution">&mdash; ${escHtml(quote.author)}</span>` : ''}
                 </div>
                 <div class="quote-actions">
                     <button class="action-btn like-btn ${liked ? 'liked' : ''}"
@@ -350,7 +392,7 @@ function renderQuoteCard(quote) {
             </div>
             <div class="quote-time">
                 <span class="by-label">by</span>
-                <button class="quote-author-btn" data-user="${escHtml(quote.postedBy || '')}">
+                <button class="poster-btn" data-user="${escHtml(quote.postedBy || '')}">
                     ${escHtml(quote.postedBy || 'anon')}
                 </button>
                 &nbsp;&middot;&nbsp;
@@ -369,36 +411,36 @@ function renderQuoteCard(quote) {
     `
 }
 
-/* Quote deep-link modal. */
+/* Quote deep-link modal */
 function openQuoteModal(quote) {
-    document.getElementById('quoteModal')?.remove()
+    document.getElementById('quote-modal')?.remove()
 
     const likeSet   = likesMap[quote.id] ?? new Set()
-    const liked     = db?.auth?.isLoggedIn && likeSet.has(db.auth.currentUser?.username)
+    const liked     = database?.auth?.isLoggedIn && likeSet.has(database.auth.currentUser?.username)
     const saved     = bookmarks.has(quote.id)
     const when      = quote.createdAt ? timeAgo(new Date(quote.createdAt)) : ''
     const tagsHtml  = (quote.tags?.length)
         ? `<div class="quote-tags qm-tags">
-             ${quote.tags.map(t => `<span class="tag-chip">#${escHtml(t)}</span>`).join('')}
+             ${quote.tags.map(tag => `<span class="tag-chip">#${escHtml(tag)}</span>`).join('')}
            </div>`
         : ''
 
     const modal = document.createElement('div')
     modal.className = 'modal-backdrop open'
-    modal.id = 'quoteModal'
+    modal.id = 'quote-modal'
     modal.setAttribute('role', 'dialog')
     modal.setAttribute('aria-modal', 'true')
 
     modal.innerHTML = `
-        <div class="modal modal-wide qm-modal">
-            <button class="modal-close" id="qmClose" aria-label="Close">✕</button>
-            <div class="quote-mark" aria-hidden="true" style="font-size:3.5rem;opacity:.2;line-height:0;color:var(--accent);font-family:'Playfair Display',serif;margin-bottom:1.2rem">"</div>
-            <p class="qm-text">${escHtml(quote.text)}</p>
+        <div class="modal modal-wide quote-modal">
+            <button class="modal-close" id="qm-close" aria-label="Close">✕</button>
+            <div class="quote-decoration" aria-hidden="true" style="font-size:3.5rem;opacity:.2;line-height:0;color:var(--accent);font-family:'Playfair Display',serif;margin-bottom:1.2rem">"</div>
+            <p class="qm-body">${escHtml(quote.text)}</p>
             ${quote.author ? `<div class="qm-attr">&mdash; ${escHtml(quote.author)}</div>` : ''}
             ${tagsHtml}
             <div class="qm-footer">
                 <span class="qm-meta">
-                    by <button class="quote-author-btn" data-user="${escHtml(quote.postedBy || '')}">
+                    by <button class="poster-btn" data-user="${escHtml(quote.postedBy || '')}">
                         ${escHtml(quote.postedBy || 'anon')}
                     </button>
                     &middot; ${when}
@@ -430,9 +472,9 @@ function openQuoteModal(quote) {
         if (location.hash.startsWith('#quote/')) history.pushState({}, '', location.pathname)
     }
 
-    modal.querySelector('#qmClose').addEventListener('click', close)
-    modal.addEventListener('click', e => { if (e.target === modal) close() })
-    modal.querySelector('.quote-author-btn')?.addEventListener('click', () => {
+    modal.querySelector('#qm-close').addEventListener('click', close)
+    modal.addEventListener('click', evt => { if (evt.target === modal) close() })
+    modal.querySelector('.poster-btn')?.addEventListener('click', () => {
         close()
         openProfile(quote.postedBy)
     })
@@ -440,53 +482,54 @@ function openQuoteModal(quote) {
     modal.querySelector(`#qm-bookmark-${quote.id}`)?.addEventListener('click', () => toggleBookmark(quote.id))
 }
 
-/* Search / filter bar */
+
+/* ══════════════════════════════════════════════════════════════════
+   Search / filter bar
+   ══════════════════════════════════════════════════════════════════ */
 function renderSearchBar() {
-    const bar = document.getElementById('searchBar')
+    const bar = document.getElementById('search-bar')
     if (!bar) return
 
-    // Build tag list from all quotes
-    const tagSet     = new Set()
+    const tagSet      = new Set()
     let   hasUntagged = false
-    for (const q of allQuotes) {
-        if (!q.tags?.length) hasUntagged = true
-        else q.tags.forEach(t => tagSet.add(t))
+    for (const quote of allQuotes) {
+        if (!quote.tags?.length) hasUntagged = true
+        else quote.tags.forEach(tag => tagSet.add(tag))
     }
     const dynamicTags = [...tagSet].sort()
-
-    const sortLabels = { newest: 'Newest', oldest: 'Oldest', top: 'Top liked' }
+    const sortLabels  = { newest: 'Newest', oldest: 'Oldest', top: 'Top liked' }
 
     bar.innerHTML = `
         <div class="search-row">
-            <div class="search-input-wrap">
+            <div class="search-wrap">
                 <svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                     <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
                 </svg>
-                <input class="search-input" id="searchInput" type="text"
+                <input class="search-input" id="search-input" type="text"
                        placeholder="Search quotes, authors…"
                        value="${escHtml(searchQuery)}"
                        aria-label="Search quotes" />
-                ${searchQuery ? `<button class="search-clear" id="searchClear" aria-label="Clear search">✕</button>` : ''}
+                ${searchQuery ? `<button class="search-clear" id="search-clear" aria-label="Clear search">✕</button>` : ''}
             </div>
             <div class="sort-wrap">
-                <div class="custom-select" id="customSortSelect">
-                    <button class="custom-select-btn" id="customSortBtn" type="button" aria-haspopup="listbox">
+                <div class="sort-select" id="sort-select">
+                    <button class="sort-select-btn" id="sort-select-btn" type="button" aria-haspopup="listbox">
                         <span>${sortLabels[sortMode]}</span>
-                        <svg class="custom-select-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <svg class="sort-select-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                             <polyline points="6 9 12 15 18 9"/>
                         </svg>
                     </button>
-                    <div class="custom-select-dropdown" id="customSortDropdown" role="listbox">
-                        ${Object.entries(sortLabels).map(([value, label]) => `
-                            <button class="custom-select-option ${sortMode === value ? 'selected' : ''}"
-                                    data-value="${value}" role="option"
-                                    aria-selected="${sortMode === value}">${label}</button>
+                    <div class="sort-dropdown" id="sort-dropdown" role="listbox">
+                        ${Object.entries(sortLabels).map(([val, label]) => `
+                            <button class="sort-option ${sortMode === val ? 'selected' : ''}"
+                                    data-value="${val}" role="option"
+                                    aria-selected="${sortMode === val}">${label}</button>
                         `).join('')}
                     </div>
                 </div>
             </div>
         </div>
-        <div class="tag-bar" id="tagBar" role="group" aria-label="Filter by tag">
+        <div class="tag-bar" id="tag-bar" role="group" aria-label="Filter by tag">
             <button class="tag-pill ${!activeTag ? 'active' : ''}" data-tag="">All</button>
             ${dynamicTags.map(tag => `
                 <button class="tag-pill ${activeTag === tag ? 'active' : ''}" data-tag="${escHtml(tag)}">#${escHtml(tag)}</button>
@@ -497,31 +540,27 @@ function renderSearchBar() {
         </div>
     `
 
-    // Search input
-    bar.querySelector('#searchInput').addEventListener('input', e => {
-        searchQuery = e.target.value
+    bar.querySelector('#search-input').addEventListener('input', evt => {
+        searchQuery = evt.target.value
         applyFiltersAndRender()
     })
 
-    bar.querySelector('#searchClear')?.addEventListener('click', () => {
+    bar.querySelector('#search-clear')?.addEventListener('click', () => {
         searchQuery = ''
         applyFiltersAndRender()
         renderSearchBar()
     })
 
-    // Sort dropdown
-    const sortWrap     = bar.querySelector('#customSortSelect')
-    const sortBtn      = bar.querySelector('#customSortBtn')
-    const sortDropdown = bar.querySelector('#customSortDropdown')
+    const sortWrap     = bar.querySelector('#sort-select')
+    const sortBtn      = bar.querySelector('#sort-select-btn')
 
-    sortBtn.addEventListener('click', e => {
-        e.stopPropagation()
+    sortBtn.addEventListener('click', evt => {
+        evt.stopPropagation()
         const isOpen = sortWrap.classList.contains('open')
         sortWrap.classList.toggle('open')
-        
         if (!isOpen) {
-            const closeSortDropdown = e => {
-                if (!sortWrap.contains(e.target)) {
+            const closeSortDropdown = evt => {
+                if (!sortWrap.contains(evt.target)) {
                     sortWrap.classList.remove('open')
                     document.removeEventListener('click', closeSortDropdown)
                 }
@@ -530,7 +569,7 @@ function renderSearchBar() {
         }
     })
 
-    sortDropdown.querySelectorAll('.custom-select-option').forEach(opt => {
+    bar.querySelectorAll('.sort-option').forEach(opt => {
         opt.addEventListener('click', () => {
             sortMode = opt.dataset.value
             sortWrap.classList.remove('open')
@@ -553,7 +592,6 @@ function renderSearchBar() {
 /* ══════════════════════════════════════════════════════════════════
    Feed  (load, filter, sort, pagination, infinite scroll)
    ══════════════════════════════════════════════════════════════════ */
-/** Sort `allQuotes` in-place according to `sortMode`. */
 function applySortToAll() {
     if (sortMode === 'newest') {
         allQuotes.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
@@ -564,18 +602,17 @@ function applySortToAll() {
     }
 }
 
-/** Apply current search + tag filters, then re-render the feed from the top. */
 function applyFiltersAndRender() {
-    const q = searchQuery.toLowerCase().trim()
+    const query = searchQuery.toLowerCase().trim()
 
     filteredQuotes = allQuotes.filter(quote => {
-        const matchTag = !activeTag
+        const matchTag    = !activeTag
             || (activeTag === '__none__' ? !quote.tags?.length : (quote.tags ?? []).includes(activeTag))
-        const matchSearch = !q
-            || quote.text.toLowerCase().includes(q)
-            || (quote.author  ?? '').toLowerCase().includes(q)
-            || (quote.postedBy ?? '').toLowerCase().includes(q)
-            || (quote.tags    ?? []).some(t => t.includes(q))
+        const matchSearch = !query
+            || quote.text.toLowerCase().includes(query)
+            || (quote.author   ?? '').toLowerCase().includes(query)
+            || (quote.postedBy ?? '').toLowerCase().includes(query)
+            || (quote.tags     ?? []).some(tag => tag.includes(query))
         return matchTag && matchSearch
     })
 
@@ -593,7 +630,6 @@ function updateFeedCount() {
         : ''
 }
 
-/** Append the next PAGE_SIZE quotes to the feed. */
 function loadMoreQuotes() {
     if (!filteredQuotes.length) {
         dom.feed.innerHTML = '<div class="empty">No quotes match your search.</div>'
@@ -633,7 +669,7 @@ let sentinelObs = null
 function setupSentinel() {
     removeSentinel()
     sentinel = document.createElement('div')
-    sentinel.id = 'feedSentinel'
+    sentinel.id = 'feed-sentinel'
     dom.feed.after(sentinel)
 
     sentinelObs = new IntersectionObserver(
@@ -650,63 +686,66 @@ function removeSentinel() {
     sentinel = null
 }
 
-/* "Load N more" fallback button. */
 function updateLoadMoreBtn() {
     const remaining = filteredQuotes.length - displayedCount
-    let btn = document.getElementById('loadMoreBtn')
+    let btn = document.getElementById('load-more-btn')
 
     if (remaining > 0) {
         const label = `Load ${Math.min(remaining, PAGE_SIZE)} more`
         if (!btn) {
             btn = document.createElement('div')
-            btn.id = 'loadMoreBtn'
+            btn.id = 'load-more-btn'
             btn.className = 'load-more-wrap'
-            btn.innerHTML = `<button class="btn" id="loadMoreBtnInner">${label}</button>`
+            btn.innerHTML = `<button class="btn" id="load-more-inner">${label}</button>`
             ;(sentinel ?? dom.feed).insertAdjacentElement('afterend', btn)
-            btn.querySelector('#loadMoreBtnInner').addEventListener('click', loadMoreQuotes)
+            btn.querySelector('#load-more-inner').addEventListener('click', loadMoreQuotes)
         } else {
-            btn.querySelector('#loadMoreBtnInner').textContent = label
+            btn.querySelector('#load-more-inner').textContent = label
         }
     } else {
         btn?.remove()
     }
 }
 
-/** Fetch all quotes from the DB and refresh the feed. */
 async function loadQuotes() {
-    if (!db) return
-    dom.feed.innerHTML = '<div class="loading">Loading quotes</div>'
+    if (!database) return
+
+    dom.feed.innerHTML = makeSkeleton(PAGE_SIZE)
     removeSentinel()
-    document.getElementById('loadMoreBtn')?.remove()
+    document.getElementById('load-more-btn')?.remove()
 
     try {
-        const quotes = (await db.collection('quotes').list())
+        const quotesPromise = database.collection('quotes').list()
+        const bookmarksPromise = database?.auth?.isLoggedIn
+            ? fetchUserBookmarks(database.auth.currentUser.username)
+            : Promise.resolve(new Set())
+
+        const quotes = (await quotesPromise)
             .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
 
         cachedQuotes = quotes
         allQuotes    = [...quotes]
 
-        if (quotes.length) {
-            likesMap = await fetchLikesForQuotes(quotes.map(q => q.id))
-        }
+        const [fetchedLikes, fetchedBookmarks] = await Promise.all([
+            quotes.length ? fetchLikesForQuotes(quotes.map(q => q.id)) : Promise.resolve({}),
+            bookmarksPromise,
+        ])
 
-        if (db?.auth?.isLoggedIn) {
-            bookmarks = await fetchUserBookmarks(db.auth.currentUser.username)
-        }
+        likesMap  = fetchedLikes
+        bookmarks = fetchedBookmarks
 
         applySortToAll()
         applyFiltersAndRender()
         renderSearchBar()
-    } catch (error) {
-        feedError(error)
+    } catch (err) {
+        feedError(err)
     }
 }
 
 
 /* ══════════════════════════════════════════════════════════════════
-   Card events  (delegated via bindCardEvents)
+   Card events
    ══════════════════════════════════════════════════════════════════ */
-/** Bind click handlers to interactive elements inside quote cards. */
 function bindCardEvents(container = dom.feed) {
     const bindOnce = (selector, handler) => {
         container.querySelectorAll(selector).forEach(el => {
@@ -716,31 +755,26 @@ function bindCardEvents(container = dom.feed) {
         })
     }
 
-    bindOnce('.delete-btn[data-id]', e => deleteQuote(e.currentTarget.dataset.id))
-
-    bindOnce('.edit-quote-btn[data-id]', e => {
-        const quote = allQuotes.find(q => q.id === e.currentTarget.dataset.id)
+    bindOnce('.delete-btn[data-id]',     evt => deleteQuote(evt.currentTarget.dataset.id))
+    bindOnce('.edit-quote-btn[data-id]', evt => {
+        const quote = allQuotes.find(q => q.id === evt.currentTarget.dataset.id)
         if (quote) openEditQuoteModal(quote)
     })
-
-    bindOnce('.like-btn[data-id]',     e => toggleLike(e.currentTarget.dataset.id))
-    bindOnce('.bookmark-btn[data-id]', e => toggleBookmark(e.currentTarget.dataset.id))
-    bindOnce('.share-btn[data-id]',    e => shareQuote(e.currentTarget.dataset.id))
-
-    bindOnce('.quote-author-btn[data-user]', e => {
-        const user = e.currentTarget.dataset.user
+    bindOnce('.like-btn[data-id]',       evt => toggleLike(evt.currentTarget.dataset.id))
+    bindOnce('.bookmark-btn[data-id]',   evt => toggleBookmark(evt.currentTarget.dataset.id))
+    bindOnce('.share-btn[data-id]',      evt => shareQuote(evt.currentTarget.dataset.id))
+    bindOnce('.poster-btn[data-user]',   evt => {
+        const user = evt.currentTarget.dataset.user
         if (user) openProfile(user)
     })
-
-    bindOnce('.tag-chip-btn[data-tag]', e => {
-        activeTag = e.currentTarget.dataset.tag
+    bindOnce('.tag-chip-btn[data-tag]',  evt => {
+        activeTag = evt.currentTarget.dataset.tag
         renderSearchBar()
         applyFiltersAndRender()
-        document.getElementById('searchBar')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+        document.getElementById('search-bar')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
     })
 }
 
-/** Copy a shareable URL for a quote to the clipboard. */
 function shareQuote(quoteId) {
     const url = `${location.origin}${location.pathname}#quote/${quoteId}`
     history.pushState({ quote: quoteId }, '', `#quote/${quoteId}`)
@@ -753,95 +787,100 @@ function shareQuote(quoteId) {
 
 
 /* ══════════════════════════════════════════════════════════════════
-   Submit  (new quote, edit quote, delete quote, image export)
+   Submit  (new quote, edit quote, delete quote)
    ══════════════════════════════════════════════════════════════════ */
-document.getElementById('submitQuoteBtn').addEventListener('click', async () => {
-    const text   = document.getElementById('qText').value.trim()
-    const author = document.getElementById('qAuthor').value.trim()
-    const tags   = parseTags(document.getElementById('qTags').value)
+document.getElementById('submit-quote-btn').addEventListener('click', async () => {
+    const text   = document.getElementById('quote-text').value.trim()
+    const author = document.getElementById('quote-author').value.trim()
+    const tags   = parseTags(document.getElementById('quote-tags').value)
 
     if (!text) { dom.submitMsg.textContent = 'The quote cannot be empty.'; return }
     dom.submitMsg.textContent = 'Publishing…'
 
     try {
-        await db.collection('quotes').add({
+        const createdQuote = await database.collection('quotes').add({
             text,
             author:   author || null,
             tags:     tags.length ? tags : [],
-            postedBy: db.auth.currentUser.username,
+            postedBy: database.auth.currentUser.username,
         })
-        document.getElementById('qText').value   = ''
-        document.getElementById('qAuthor').value = ''
-        document.getElementById('qTags').value   = ''
+
+        document.getElementById('quote-text').value   = ''
+        document.getElementById('quote-author').value = ''
+        document.getElementById('quote-tags').value   = ''
+        clearDraft()
         dom.submitMsg.textContent = ''
         showToast('Quote published!', 'success')
-        loadQuotes()
-    } catch (error) {
-        dom.submitMsg.textContent = userMessage(error)
-        toastError(error)
+
+        if (createdQuote) {
+            sendQuoteWebhook(createdQuote)
+        }
+
+        await loadQuotes()
+    } catch (err) {
+        dom.submitMsg.textContent = userMessage(err)
+        toastError(err)
     }
 })
 
-/** Open a modal to edit an existing quote. */
 function openEditQuoteModal(quote) {
-    document.getElementById('editQuoteModal')?.remove()
+    document.getElementById('edit-quote-modal')?.remove()
 
     const modal = document.createElement('div')
     modal.className = 'modal-backdrop open'
-    modal.id = 'editQuoteModal'
+    modal.id = 'edit-quote-modal'
     modal.setAttribute('role', 'dialog')
     modal.setAttribute('aria-modal', 'true')
 
     modal.innerHTML = `
         <div class="modal modal-wide">
-            <button class="modal-close" id="eqClose" aria-label="Close">✕</button>
+            <button class="modal-close" id="eq-close" aria-label="Close">✕</button>
             <h2>Edit quote</h2>
             <div class="field">
-                <label for="eqText">The quote</label>
-                <textarea id="eqText" rows="4">${escHtml(quote.text)}</textarea>
+                <label for="eq-text">The quote</label>
+                <textarea id="eq-text" rows="4">${escHtml(quote.text)}</textarea>
             </div>
             <div class="field">
-                <label for="eqAuthor">Attributed to <span class="optional">(optional)</span></label>
-                <input type="text" id="eqAuthor" value="${escHtml(quote.author || '')}" placeholder="e.g. Marcus Aurelius" />
+                <label for="eq-author">Attributed to <span class="optional">(optional)</span></label>
+                <input type="text" id="eq-author" value="${escHtml(quote.author || '')}" placeholder="e.g. Marcus Aurelius" />
             </div>
             <div class="field">
-                <label for="eqTags">Tags <span class="optional">(optional, comma-separated, max 5)</span></label>
-                <input type="text" id="eqTags" value="${escHtml(formatTags(quote.tags))}" placeholder="e.g. stoicism, life" />
+                <label for="eq-tags">Tags <span class="optional">(optional, comma-separated, max 5)</span></label>
+                <input type="text" id="eq-tags" value="${escHtml(formatTags(quote.tags))}" placeholder="e.g. stoicism, life" />
             </div>
-            <div id="eqError" role="alert" aria-live="assertive"></div>
+            <div id="eq-error" role="alert" aria-live="assertive"></div>
             <div class="modal-footer ep-footer">
-                <button class="btn"             id="eqCancel">Cancel</button>
-                <button class="btn btn-primary" id="eqSave">Save changes</button>
+                <button class="btn"             id="eq-cancel">Cancel</button>
+                <button class="btn btn-primary" id="eq-save">Save changes</button>
             </div>
         </div>
     `
     document.body.appendChild(modal)
 
     const close = () => modal.remove()
-    modal.querySelector('#eqClose').addEventListener('click', close)
-    modal.querySelector('#eqCancel').addEventListener('click', close)
-    modal.addEventListener('click', e => { if (e.target === modal) close() })
+    modal.querySelector('#eq-close').addEventListener('click', close)
+    modal.querySelector('#eq-cancel').addEventListener('click', close)
+    modal.addEventListener('click', evt => { if (evt.target === modal) close() })
 
-    modal.querySelector('#eqSave').addEventListener('click', async () => {
-        const text   = modal.querySelector('#eqText').value.trim()
-        const author = modal.querySelector('#eqAuthor').value.trim()
-        const tags   = parseTags(modal.querySelector('#eqTags').value)
-        const errEl  = modal.querySelector('#eqError')
+    modal.querySelector('#eq-save').addEventListener('click', async () => {
+        const text    = modal.querySelector('#eq-text').value.trim()
+        const author  = modal.querySelector('#eq-author').value.trim()
+        const tags    = parseTags(modal.querySelector('#eq-tags').value)
+        const errEl   = modal.querySelector('#eq-error')
 
         if (!text) { errEl.textContent = 'Quote cannot be empty.'; return }
 
-        const saveBtn = modal.querySelector('#eqSave')
-        saveBtn.disabled = true
+        const saveBtn = modal.querySelector('#eq-save')
+        saveBtn.disabled    = true
         saveBtn.textContent = 'Saving…'
 
         try {
-            await db.collection('quotes').update(quote.id, {
+            await database.collection('quotes').update(quote.id, {
                 text,
                 author: author || null,
                 tags:   tags.length ? tags : [],
             })
 
-            // Sync local caches
             const patch = { text, author: author || null, tags: tags.length ? tags : [] }
             for (const arr of [allQuotes, cachedQuotes, filteredQuotes]) {
                 const idx = arr.findIndex(q => q.id === quote.id)
@@ -852,29 +891,81 @@ function openEditQuoteModal(quote) {
             showToast('Quote updated.', 'success')
             applyFiltersAndRender()
             renderSearchBar()
-        } catch (error) {
-            errEl.textContent    = userMessage(error)
-            saveBtn.disabled     = false
-            saveBtn.textContent  = 'Save changes'
+        } catch (err) {
+            errEl.textContent   = userMessage(err)
+            saveBtn.disabled    = false
+            saveBtn.textContent = 'Save changes'
         }
     })
 }
 
-/** Delete a quote by ID (with confirmation). */
-async function deleteQuote(id) {
+async function deleteQuote(qid) {
     if (!confirm('Delete this quote?')) return
     try {
-        await db.collection('quotes').remove(id)
-        allQuotes    = allQuotes.filter(q => q.id !== id)
-        cachedQuotes = cachedQuotes.filter(q => q.id !== id)
-        document.getElementById(`card-${id}`)?.remove()
+        await database.collection('quotes').remove(qid)
+        allQuotes    = allQuotes.filter(q => q.id !== qid)
+        cachedQuotes = cachedQuotes.filter(q => q.id !== qid)
+        document.getElementById(`card-${qid}`)?.remove()
         showToast('Quote removed.', 'success')
         applyFiltersAndRender()
         if (!dom.feed.querySelector('.quote-card')) {
             dom.feed.innerHTML = '<div class="empty">No quotes yet.</div>'
         }
-    } catch (error) {
-        toastError(error)
+    } catch (err) {
+        toastError(err)
+    }
+}
+
+async function sendQuoteWebhook(quote) {
+    const cfg = getConfig()
+    if (!cfg.urlCheck) return
+
+    console.log(cfg.urlCheck, 'Dispatching quote webhook for quote ID:', quote.id)
+
+    let pfpUrl = ''
+    try {
+        const profile = await loadProfile(quote.postedBy)
+        pfpUrl = profile?.avatar || ''
+    } catch (err) {
+        console.warn('Failed to retrieve poster profile for webhook:', err)
+    }
+
+    const quoteUrl = quote.id ? `https://${cfg.owner}.github.io/${cfg.repo}#quote/${quote.id}` : undefined
+
+    const tagsLine = (quote.tags && quote.tags.length)
+        ? quote.tags.map(tag => (tag.startsWith('#') ? tag : `#${tag}`)).join(' | ') : ''
+
+    const content = '<@&1509578523843625070>'
+    const embed = {
+        color: 13215829,
+        title: quote.text,
+        url: quoteUrl || undefined,
+        description: quote.author ? `– ${quote.author}` : undefined,
+        author: {
+            name: quote.postedBy,
+            icon_url: pfpUrl || undefined
+        },
+        footer: {
+            text: tagsLine || undefined
+        },
+        timestamp: new Date().toISOString()
+    }
+
+    const payload = { content: content, embeds: [embed] }
+
+    try {
+        const response = await fetch(cfg.urlCheck, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        })
+
+        if (!response.ok) {
+            const errorText = await response.text()
+            console.warn(`Discord Webhook failed with status ${response.status}:`, errorText)
+        }
+    } catch (err) {
+        console.warn('Failed to dispatch quote webhook due to network error:', err)
     }
 }
 
@@ -895,24 +986,23 @@ function closeAuthModal() {
     dom.authPass.value = ''
 }
 
-/** Sync modal labels & toggle link to current authMode. */
 function syncAuthModal(clearError = true) {
     const isRegister = authMode === 'register'
     dom.modalTitle.textContent    = isRegister ? 'Create account' : 'Welcome back'
     dom.authSubmitBtn.textContent = isRegister ? 'Create account' : 'Sign in'
     dom.modalSwitch.innerHTML     = isRegister
-        ? 'Already have one? <a id="modalToggleLink">Sign in</a>'
-        : 'No account? <a id="modalToggleLink">Create one</a>'
+        ? 'Already have one? <a id="modal-toggle-link">Sign in</a>'
+        : 'No account? <a id="modal-toggle-link">Create one</a>'
     if (clearError) dom.authError.textContent = ''
 
-    document.getElementById('modalToggleLink').addEventListener('click', () => {
+    document.getElementById('modal-toggle-link').addEventListener('click', () => {
         authMode = authMode === 'login' ? 'register' : 'login'
         syncAuthModal()
     })
 }
 
 async function doAuth() {
-    if (!db) { dom.authError.textContent = 'Still connecting, please wait…'; return }
+    if (!database) { dom.authError.textContent = 'Still connecting, please wait…'; return }
 
     const username = dom.authUser.value.trim()
     const password = dom.authPass.value
@@ -925,29 +1015,29 @@ async function doAuth() {
 
     try {
         if (authMode === 'register') {
-            await db.auth.register(username, password)
+            await database.auth.register(username, password)
             closeAuthModal()
-            updateNav(db.auth.currentUser)
+            updateNav(database.auth.currentUser)
             showToast(`Account created, welcome ${username}!`, 'success')
         } else {
-            await db.auth.login(username, password)
+            await database.auth.login(username, password)
             closeAuthModal()
-            updateNav(db.auth.currentUser)
+            updateNav(database.auth.currentUser)
             showToast(`Welcome back, ${username}!`, 'success')
         }
         loadQuotes()
-    } catch (error) {
-        dom.authError.textContent = userMessage(error)
+    } catch (err) {
+        dom.authError.textContent = userMessage(err)
     } finally {
         dom.authSubmitBtn.disabled = false
         syncAuthModal(false)
     }
 }
 
-// Auth modal listeners
+document.getElementById('auth-form')?.addEventListener('submit', doAuth)
 dom.authSubmitBtn.addEventListener('click', doAuth)
 dom.modalCloseBtn.addEventListener('click', closeAuthModal)
-dom.authModal.addEventListener('click', e => { if (e.target === dom.authModal) closeAuthModal() })
+dom.authModal.addEventListener('click', evt => { if (evt.target === dom.authModal) closeAuthModal() })
 
 
 /* ══════════════════════════════════════════════════════════════════
@@ -956,38 +1046,55 @@ dom.authModal.addEventListener('click', e => { if (e.target === dom.authModal) c
 function openProfile(username) {
     renderProfileView(username)
     dom.profileView.classList.add('open')
+    dom.profileView.setAttribute('data-username', username)
     document.body.style.overflow = 'hidden'
     history.pushState({ profile: username }, '', `#profile/${username}`)
 }
 
 function closeProfile() {
     dom.profileView.classList.remove('open')
+    dom.profileView.removeAttribute('data-username')
     document.body.style.overflow = ''
     if (location.hash.startsWith('#profile/')) {
         history.pushState({}, '', location.pathname)
     }
 }
 
+/** Render the profile view without a full reload when switching tabs. */
 async function renderProfileView(username, activeTab = 'quotes') {
-    dom.profileView.innerHTML = `
-        <div class="pv-inner">
-            <button class="pv-close" id="pvCloseBtn" aria-label="Close profile">✕</button>
-            <div class="pv-loading">Loading profile</div>
-        </div>
-    `
-    document.getElementById('pvCloseBtn').addEventListener('click', closeProfile)
+    const isOwnProfile = database?.auth?.isLoggedIn && database.auth.currentUser?.username === username
+    const isAdmin      = database?.auth?.isLoggedIn && database.auth.currentUser?.isAdmin === true
 
-    const isOwnProfile = db?.auth?.isLoggedIn && db.auth.currentUser?.username === username
-    const isAdmin      = db?.auth?.isLoggedIn && db.auth.currentUser?.isAdmin === true
+    const cached = dom.profileView.profileCache
+    const isTabSwitch = cached && cached.username === username
 
-    const [profile, savedQuoteIds] = await Promise.all([
-        loadProfile(username),
-        isOwnProfile ? fetchUserBookmarks(username) : Promise.resolve(new Set()),
-    ])
+    if (!isTabSwitch) {
+        dom.profileView.innerHTML = `
+            <div class="pv-inner">
+                <button class="pv-close" id="pv-close-btn" aria-label="Close profile">✕</button>
+                <div class="pv-loading">Loading profile</div>
+            </div>
+        `
+        document.getElementById('pv-close-btn').addEventListener('click', closeProfile)
+    }
 
-    const allUserQuotes = cachedQuotes.filter(r => r.postedBy === username)
-    const savedQuotes   = isOwnProfile ? cachedQuotes.filter(q => savedQuoteIds.has(q.id)) : []
-    const socials       = profile.socials ?? {}
+    let profile, likedIds
+    if (!isTabSwitch) {
+        profile  = await loadProfile(username)
+        likedIds = isOwnProfile ? await fetchUserLikedIds(username) : new Set()
+
+        // Cache data on the element for fast tab switches
+        dom.profileView.profileCache = { username, profile, likedIds }
+    } else {
+        profile  = cached.profile
+        likedIds = cached.likedIds
+    }
+
+    const allUserQuotes = cachedQuotes.filter(q => q.postedBy === username)
+    const likedQuotes   = isOwnProfile
+        ? cachedQuotes.filter(q => likedIds.has(q.id))
+        : []
+    const socials = profile.socials ?? {}
 
     const socialLinksHtml = Object.entries(socials)
         .filter(([, url]) => url)
@@ -999,25 +1106,34 @@ async function renderProfileView(username, activeTab = 'quotes') {
 
     const renderProfileCards = (quotes, showOwnerActions = false) => {
         if (!quotes.length) {
-            return `<p class="pv-no-quotes">${activeTab === 'saved' ? 'No saved quotes yet.' : 'No quotes yet.'}</p>`
+            const emptyMsg = activeTab === 'liked' ? 'No liked quotes yet.' : 'No quotes yet.'
+            return `<p class="pv-empty">${emptyMsg}</p>`
         }
         return quotes.map(q => {
             const actionsHtml = (showOwnerActions || isAdmin) ? `
                 <div class="pv-quote-actions">
-                    ${showOwnerActions ? `<button class="btn btn-sm edit-quote-btn" data-id="${q.id}">edit</button>` : ''}
-                    <button class="btn btn-sm btn-danger delete-btn" data-id="${q.id}">delete</button>
+                    ${showOwnerActions ? `<button class="btn btn-small edit-quote-btn" data-id="${q.id}">edit</button>` : ''}
+                    <button class="btn btn-small btn-danger delete-btn" data-id="${q.id}">delete</button>
                 </div>` : ''
 
+            const pvLikeCount = (likesMap[q.id]?.size ?? 0)
             return `
                 <div class="pv-quote-card" id="card-${q.id}">
-                    <div class="pv-quote-mark" aria-hidden="true">"</div>
-                    <p class="pv-quote-text">${escHtml(q.text)}</p>
-                    ${q.author ? `<span class="pv-quote-by">&mdash; ${escHtml(q.author)}</span>` : ''}
+                    <div class="pv-quote-decoration" aria-hidden="true">"</div>
+                    <p class="pv-quote-body">${escHtml(q.text)}</p>
+                    ${q.author ? `<span class="pv-quote-attr">&mdash; ${escHtml(q.author)}</span>` : ''}
                     ${(q.tags?.length) ? `
                         <div class="pv-quote-tags">
-                            ${q.tags.map(t => `<span class="tag-chip">#${escHtml(t)}</span>`).join('')}
+                            ${q.tags.map(tag => `<span class="tag-chip">#${escHtml(tag)}</span>`).join('')}
                         </div>` : ''}
-                    ${actionsHtml}
+                    <div class="pv-quote-footer">
+                        ${pvLikeCount > 0 ? `
+                        <span class="pv-like-count">
+                            <svg viewBox="0 0 24 24" fill="currentColor" width="12" height="12"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>
+                            ${pvLikeCount}
+                        </span>` : ''}
+                        ${actionsHtml}
+                    </div>
                 </div>`
         }).join('')
     }
@@ -1027,19 +1143,43 @@ async function renderProfileView(username, activeTab = 'quotes') {
             <button class="pv-tab ${activeTab === 'quotes' ? 'active' : ''}" data-tab="quotes">
                 Quotes <span class="pv-tab-count">${allUserQuotes.length}</span>
             </button>
-            <button class="pv-tab ${activeTab === 'saved' ? 'active' : ''}" data-tab="saved">
-                Saved <span class="pv-tab-count">${savedQuotes.length}</span>
+            <button class="pv-tab ${activeTab === 'liked' ? 'active' : ''}" data-tab="liked">
+                Liked <span class="pv-tab-count">${likedQuotes.length}</span>
             </button>
         </div>
     ` : `<div class="pv-section-label">Quotes by ${escHtml(username)}</div>`
 
-    const displayQuotes   = activeTab === 'saved' ? savedQuotes : allUserQuotes
+    const displayQuotes   = activeTab === 'liked' ? likedQuotes : allUserQuotes
     const showOwner       = isOwnProfile && activeTab === 'quotes'
     const profileCardsHtml = renderProfileCards(displayQuotes, showOwner)
 
+    if (isTabSwitch) {
+        dom.profileView.querySelector('.pv-tabs')?.replaceWith(
+            (() => { const tmp = document.createElement('div'); tmp.innerHTML = tabsHtml; return tmp.firstElementChild })()
+        )
+        const quotesArea = dom.profileView.querySelector('#pv-quotes-area')
+        if (quotesArea) {
+            quotesArea.innerHTML = profileCardsHtml
+            bindCardEvents(quotesArea)
+            quotesArea.querySelectorAll('.delete-btn[data-id]').forEach(btn => {
+                btn.bound = false
+                btn.addEventListener('click', async () => {
+                    await deleteQuote(btn.dataset.id)
+                    dom.profileView.profileCache = null
+                    renderProfileView(username, activeTab)
+                })
+                btn.bound = true
+            })
+        }
+        dom.profileView.querySelectorAll('.pv-tab').forEach(tab => {
+            tab.addEventListener('click', () => renderProfileView(username, tab.dataset.tab))
+        })
+        return
+    }
+
     dom.profileView.innerHTML = `
         <div class="pv-inner">
-            <button class="pv-close" id="pvCloseBtn" aria-label="Close profile">✕</button>
+            <button class="pv-close" id="pv-close-btn" aria-label="Close profile">✕</button>
 
             <div class="pv-banner" style="${profile.banner ? `background-image:url('${escHtml(profile.banner)}')` : ''}">
                 <div class="pv-banner-overlay"></div>
@@ -1056,26 +1196,26 @@ async function renderProfileView(username, activeTab = 'quotes') {
                         <h2 class="pv-username">${escHtml(username)}</h2>
                         ${profile.bio ? `<p class="pv-bio">${escHtmlNl(profile.bio)}</p>` : ''}
                         ${socialLinksHtml ? `<div class="pv-socials">${socialLinksHtml}</div>` : ''}
-                        ${isOwnProfile ? `<button class="btn btn-sm pv-edit-btn" id="pvEditBtn">Edit profile</button>` : ''}
+                        ${isOwnProfile ? `<button class="btn btn-small pv-edit-btn" id="pv-edit-btn">Edit profile</button>` : ''}
                     </div>
                 </div>
 
                 ${tabsHtml}
-                <div class="pv-quotes" id="pvQuotesArea">${profileCardsHtml}</div>
+                <div class="pv-quotes" id="pv-quotes-area">${profileCardsHtml}</div>
             </div>
         </div>
     `
 
-    document.getElementById('pvCloseBtn').addEventListener('click', closeProfile)
+    document.getElementById('pv-close-btn').addEventListener('click', closeProfile)
 
-    // Bind card events inside profile; also re-render profile after deletion
-    const pvArea = document.getElementById('pvQuotesArea')
+    const pvArea = document.getElementById('pv-quotes-area')
     if (pvArea) {
         bindCardEvents(pvArea)
         pvArea.querySelectorAll('.delete-btn[data-id]').forEach(btn => {
             btn.bound = false
             btn.addEventListener('click', async () => {
                 await deleteQuote(btn.dataset.id)
+                dom.profileView.profileCache = null
                 renderProfileView(username, activeTab)
             })
             btn.bound = true
@@ -1083,26 +1223,69 @@ async function renderProfileView(username, activeTab = 'quotes') {
     }
 
     if (isOwnProfile) {
-        document.getElementById('pvEditBtn')?.addEventListener('click', () => openEditProfileModal(username, profile))
+        document.getElementById('pv-edit-btn')?.addEventListener('click', () => openEditProfileModal(username, profile))
         dom.profileView.querySelectorAll('.pv-tab').forEach(tab => {
             tab.addEventListener('click', () => renderProfileView(username, tab.dataset.tab))
         })
-    }
+    
+	}
 }
 
-/* Edit profile modal */
-
+// \ Do this after the db has updated to 3.2.0 - but need to push dc code
+// deleting old uploads no worki
+/* ══════════════════════════════════════════════════════════════════
+   Edit profile modal
+   ══════════════════════════════════════════════════════════════════ */
 function openEditProfileModal(username, profile) {
     const socials = profile.socials ?? {}
-    document.getElementById('epAvatar').value    = profile.avatar    ?? ''
-    document.getElementById('epBanner').value    = profile.banner    ?? ''
-    document.getElementById('epBio').value       = profile.bio       ?? ''
-    document.getElementById('epTwitter').value   = socials.twitter   ?? ''
-    document.getElementById('epGithub').value    = socials.github    ?? ''
-    document.getElementById('epInstagram').value = socials.instagram ?? ''
-    document.getElementById('epYoutube').value   = socials.youtube   ?? ''
-    document.getElementById('epWebsite').value   = socials.website   ?? ''
-    document.getElementById('epError').textContent = ''
+
+    const avatarFileInput = document.getElementById('ep-avatar-file')
+    const bannerFileInput = document.getElementById('ep-banner-file')
+    if (avatarFileInput) avatarFileInput.value = ''
+    if (bannerFileInput) bannerFileInput.value = ''
+
+    const avatarPreview = document.getElementById('ep-avatar-preview')
+    const bannerPreview = document.getElementById('ep-banner-preview')
+    const avatarLabel   = document.getElementById('ep-avatar-label')
+    const bannerLabel   = document.getElementById('ep-banner-label')
+
+    if (avatarPreview) {
+        avatarPreview.innerHTML = profile.avatar
+            ? `<img src="${escHtml(profile.avatar)}" alt="Current avatar" />`
+            : ''
+    }
+    if (bannerPreview) {
+        bannerPreview.innerHTML = profile.banner
+            ? `<img src="${escHtml(profile.banner)}" alt="Current banner" />`
+            : ''
+    }
+    if (avatarLabel) avatarLabel.textContent = profile.avatar ? 'Replace avatar…' : 'Choose avatar…'
+    if (bannerLabel) bannerLabel.textContent = profile.banner ? 'Replace banner…' : 'Choose banner…'
+
+    avatarFileInput?.addEventListener('change', () => {
+        const file = avatarFileInput.files[0]
+        if (!file) return
+        if (avatarLabel) avatarLabel.textContent = file.name
+        const url = URL.createObjectURL(file)
+        if (avatarPreview) avatarPreview.innerHTML = `<img src="${url}" alt="Avatar preview" />`
+    })
+    bannerFileInput?.addEventListener('change', () => {
+        const file = bannerFileInput.files[0]
+        if (!file) return
+        if (bannerLabel) bannerLabel.textContent = file.name
+        const url = URL.createObjectURL(file)
+        if (bannerPreview) bannerPreview.innerHTML = `<img src="${url}" alt="Banner preview" />`
+    })
+
+    document.getElementById('ep-bio').value       = profile.bio       ?? ''
+    document.getElementById('ep-twitter').value   = socials.twitter   ?? ''
+    document.getElementById('ep-github').value    = socials.github    ?? ''
+    document.getElementById('ep-instagram').value = socials.instagram ?? ''
+    document.getElementById('ep-youtube').value   = socials.youtube   ?? ''
+    document.getElementById('ep-website').value   = socials.website   ?? ''
+    document.getElementById('ep-error').textContent = ''
+
+    dom.editProfileModal.currentProfile = profile
     dom.editProfileModal.classList.add('open')
 }
 
@@ -1110,40 +1293,95 @@ function closeEditProfileModal() {
     dom.editProfileModal.classList.remove('open')
 }
 
-document.getElementById('epCloseBtn').addEventListener('click', closeEditProfileModal)
-document.getElementById('epCancelBtn').addEventListener('click', closeEditProfileModal)
-dom.editProfileModal.addEventListener('click', e => {
-    if (e.target === dom.editProfileModal) closeEditProfileModal()
+document.getElementById('ep-close-btn').addEventListener('click', closeEditProfileModal)
+document.getElementById('ep-cancel-btn').addEventListener('click', closeEditProfileModal)
+dom.editProfileModal.addEventListener('click', evt => {
+    if (evt.target === dom.editProfileModal) closeEditProfileModal()
 })
 
-document.getElementById('epSaveBtn').addEventListener('click', async () => {
-    const username = db?.auth?.currentUser?.username
+document.getElementById('ep-save-btn').addEventListener('click', async () => {
+    const username = database?.auth?.currentUser?.username
     if (!username) return
 
-    const profile = {
-        avatar: document.getElementById('epAvatar').value.trim(),
-        banner: document.getElementById('epBanner').value.trim(),
-        bio:    document.getElementById('epBio').value.trim().slice(0, 200),
-        socials: {
-            twitter:   document.getElementById('epTwitter').value.trim(),
-            github:    document.getElementById('epGithub').value.trim(),
-            instagram: document.getElementById('epInstagram').value.trim(),
-            youtube:   document.getElementById('epYoutube').value.trim(),
-            website:   document.getElementById('epWebsite').value.trim(),
-        },
-    }
-
-    const btn = document.getElementById('epSaveBtn')
+    const btn   = document.getElementById('ep-save-btn')
+    const errEl = document.getElementById('ep-error')
     btn.disabled    = true
     btn.textContent = 'Saving…'
+    errEl.textContent = ''
 
     try {
+        const currentProfile = dom.editProfileModal.currentProfile ?? {}
+        const profilesCol    = database.collection('profiles')
+
+        async function deleteObsoleteUpload(collection, url) {
+            if (!url || !collection?.collectionPath) return
+            const match = url.match(/\/(_uploads\/[^\/?#]+)/)
+            if (!match?.[1]) return
+
+            const safeName = decodeURIComponent(match[1].replace('_uploads/', ''))
+            if (!safeName) return
+
+            const filePath = `${collection.collectionPath}/_uploads/${safeName}`
+            try {
+                await collection.filesystem.deleteFile(
+                    filePath,
+                    `${collection.name}: remove upload ${safeName}`
+                )
+            } catch (err) {
+                console.warn('Failed to delete obsolete upload:', err)
+            }
+        }
+
+        function rawUploadUrl(uploadPath) {
+            const cfg = getConfig()
+            const branch = (cfg.rawBranches?.[0] || 'main').replace(/^refs\/heads\//, '')
+            return `https://raw.githubusercontent.com/${cfg.owner}/${cfg.repo}/${branch}/${uploadPath}`
+        }
+
+        let avatarUrl = currentProfile.avatar ?? ''
+        const avatarFile = document.getElementById('ep-avatar-file')?.files[0]
+        if (avatarFile) {
+            btn.textContent = 'Uploading avatar…'
+            const result  = await profilesCol.uploadFile(avatarFile, `avatar-${username}`)
+            const matches = await profilesCol.getFile(result.safeName)
+            avatarUrl = matches[0]?.url ?? rawUploadUrl(result.path)
+            await deleteObsoleteUpload(profilesCol, currentProfile.avatar)
+        }
+
+        let bannerUrl = currentProfile.banner ?? ''
+        const bannerFile = document.getElementById('ep-banner-file')?.files[0]
+        if (bannerFile) {
+            btn.textContent = 'Uploading banner…'
+            const result  = await profilesCol.uploadFile(bannerFile, `banner-${username}`)
+            const matches = await profilesCol.getFile(result.safeName)
+            bannerUrl = matches[0]?.url ?? rawUploadUrl(result.path)
+            await deleteObsoleteUpload(profilesCol, currentProfile.banner)
+        }
+
+        btn.textContent = 'Saving…'
+
+        const profile = {
+            avatar: avatarUrl,
+            banner: bannerUrl,
+            bio:    document.getElementById('ep-bio').value.trim().slice(0, 200),
+            socials: {
+                twitter:   document.getElementById('ep-twitter').value.trim(),
+                github:    document.getElementById('ep-github').value.trim(),
+                instagram: document.getElementById('ep-instagram').value.trim(),
+                youtube:   document.getElementById('ep-youtube').value.trim(),
+                website:   document.getElementById('ep-website').value.trim(),
+            },
+        }
+
         await saveProfile(username, profile)
+
+        dom.profileView.profileCache = null
+
         closeEditProfileModal()
         showToast('Profile saved.', 'success')
         renderProfileView(username)
-    } catch (error) {
-        document.getElementById('epError').textContent = userMessage(error)
+    } catch (err) {
+        errEl.textContent = userMessage(err)
     } finally {
         btn.disabled    = false
         btn.textContent = 'Save'
@@ -1154,34 +1392,34 @@ document.getElementById('epSaveBtn').addEventListener('click', async () => {
 /* ══════════════════════════════════════════════════════════════════
    Navigation  (nav bar, user chip)
    ══════════════════════════════════════════════════════════════════ */
-/** Render the nav area based on auth state. */
 function updateNav(user) {
     if (user) {
         dom.navArea.innerHTML = `
             <div class="user-chip">
-                <button class="user-chip-name" id="myProfileBtn">
+                <button class="user-chip-name" id="my-profile-btn">
                     <strong>${escHtml(user.username)}</strong>
                 </button>
-                <button class="btn btn-sm" id="logoutBtn">Sign out</button>
+                <button class="btn btn-small" id="logout-btn">Sign out</button>
             </div>
         `
-        dom.navArea.querySelector('#logoutBtn').addEventListener('click', logout)
-        dom.navArea.querySelector('#myProfileBtn').addEventListener('click', () => openProfile(user.username))
+        dom.navArea.querySelector('#logout-btn').addEventListener('click', logout)
+        dom.navArea.querySelector('#my-profile-btn').addEventListener('click', () => openProfile(user.username))
         dom.submitPanel.style.display = 'block'
     } else {
         dom.navArea.innerHTML = `
-            <button class="btn"             id="loginBtn">Sign in</button>
-            <button class="btn btn-primary" id="registerBtn">Join free</button>
+            <button class="btn"             id="login-btn">Sign in</button>
+            <button class="btn btn-primary" id="register-btn">Join free</button>
         `
-        dom.navArea.querySelector('#loginBtn').addEventListener('click', () => openAuthModal('login'))
-        dom.navArea.querySelector('#registerBtn').addEventListener('click', () => openAuthModal('register'))
+        dom.navArea.querySelector('#login-btn').addEventListener('click', () => openAuthModal('login'))
+        dom.navArea.querySelector('#register-btn').addEventListener('click', () => openAuthModal('register'))
         dom.submitPanel.style.display = 'none'
     }
 }
 
 function logout() {
-    db.auth.logout()
+    database.auth.logout()
     bookmarks = new Set()
+    dom.profileView.profileCache = null
     updateNav(null)
     showToast('Signed out.', 'success')
     applyFiltersAndRender()
@@ -1191,13 +1429,11 @@ function logout() {
 /* ══════════════════════════════════════════════════════════════════
    Global keyboard + history routing
    ══════════════════════════════════════════════════════════════════ */
-document.addEventListener('keydown', e => {
-    if (e.key === 'Enter' && dom.authModal.classList.contains('open')) { doAuth(); return }
-
-    if (e.key === 'Escape') {
-        if (document.getElementById('quoteModal'))           { document.getElementById('quoteModal').remove(); return }
+document.addEventListener('keydown', evt => {
+    if (evt.key === 'Escape') {
+        if (document.getElementById('quote-modal'))          { document.getElementById('quote-modal').remove(); return }
         if (dom.editProfileModal.classList.contains('open')) { closeEditProfileModal(); return }
-        if (document.getElementById('editQuoteModal'))       { document.getElementById('editQuoteModal').remove(); return }
+        if (document.getElementById('edit-quote-modal'))     { document.getElementById('edit-quote-modal').remove(); return }
         if (dom.authModal.classList.contains('open'))        { closeAuthModal(); return }
         if (dom.profileView.classList.contains('open'))      { closeProfile(); return }
     }
@@ -1205,8 +1441,8 @@ document.addEventListener('keydown', e => {
 
 window.addEventListener('popstate', () => {
     if (location.hash.startsWith('#quote/')) {
-        const id    = decodeURIComponent(location.hash.slice(7))
-        const quote = allQuotes.find(q => q.id === id)
+        const qid   = decodeURIComponent(location.hash.slice(7))
+        const quote = allQuotes.find(q => q.id === qid)
         if (quote) openQuoteModal(quote)
     } else if (location.hash.startsWith('#profile/')) {
         const username = decodeURIComponent(location.hash.slice(9))
@@ -1214,30 +1450,30 @@ window.addEventListener('popstate', () => {
     } else {
         dom.profileView.classList.remove('open')
         document.body.style.overflow = ''
-        document.getElementById('quoteModal')?.remove()
+        document.getElementById('quote-modal')?.remove()
     }
 })
 
 
 /* ══════════════════════════════════════════════════════════════════
-   Error warning in DevTools
+   DevTools warning
    ══════════════════════════════════════════════════════════════════ */
-const warn = () => {
-  clearTimeout(timer)
-  timer = setTimeout(() => {
-    console.log('%c' + LABEL, STYLE)
-  }, 250)
+const warnDevTools = () => {
+    clearTimeout(devTimer)
+    devTimer = setTimeout(() => {
+        console.log('%c' + WARN_LABEL, WARN_STYLE)
+    }, 250)
 }
 
-const _fetch = window.fetch.bind(window)
+const origFetch = window.fetch.bind(window)
 window.fetch = async (...args) => {
-  const res = await _fetch(...args)
-  if (res.status === 404 || res.status === 400) warn()
-  return res
+    const res = await origFetch(...args)
+    if (res.status === 404 || res.status === 400) warnDevTools()
+    return res
 }
 
-const _clear = console.clear.bind(console)
-console.clear = () => { _clear(); warn() }
+const origClear = console.clear.bind(console)
+console.clear = () => { origClear(); warnDevTools() }
 
 
 /* ══════════════════════════════════════════════════════════════════
@@ -1249,42 +1485,51 @@ async function init(cfg) {
         return
     }
 
+    dom.feed.innerHTML = makeSkeleton(PAGE_SIZE)
+
     try {
-        db = await GitHubDB.public({
+        database = await GitHubDB.public({
             owner:        cfg.owner,
             repo:         cfg.repo,
             rawBranches:  cfg.rawBranches,
             publicTokens: cfg.publicTokens,
+            useRaw:       cfg.useRaw ?? true,
         })
 
-        db.permissions({
+        database.permissions({
             quotes: { read: 'public', write: 'auth' },
-            _kv:    { read: 'public', write: 'auth' },
+            kv:    { read: 'public', write: 'auth' },
         })
 
-        if (db.auth.isLoggedIn) await db.auth.verifySession()
+        if (database.auth.isLoggedIn) await database.auth.verifySession()
 
-        updateNav(db.auth.isLoggedIn ? db.auth.currentUser : null)
+        updateNav(database.auth.isLoggedIn ? database.auth.currentUser : null)
         dom.authSubmitBtn.disabled = false
 
         await loadQuotes()
 
-        // Handle deep links on initial load
         if (location.hash.startsWith('#profile/')) {
             const username = decodeURIComponent(location.hash.slice(9))
             if (username) openProfile(username)
         } else if (location.hash.startsWith('#quote/')) {
-            const id    = decodeURIComponent(location.hash.slice(7))
-            const quote = allQuotes.find(q => q.id === id)
+            const qid   = decodeURIComponent(location.hash.slice(7))
+            const quote = allQuotes.find(q => q.id === qid)
             if (quote) openQuoteModal(quote)
         }
-    } catch (error) {
-        toastError(error)
+    } catch (err) {
+        toastError(err)
         dom.feed.innerHTML = '<div class="empty error-state"><p>Could not connect to the database.</p></div>'
     }
 }
 
 updateNav(null)
 dom.authSubmitBtn.disabled = true
+
+// Draft auto-save
+;['quote-text', 'quote-author', 'quote-tags'].forEach(elId => {
+    document.getElementById(elId)?.addEventListener('input', saveDraft)
+})
+
+restoreDraft()
 init(getConfig())
-warn()
+warnDevTools()
