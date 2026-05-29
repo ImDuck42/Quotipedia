@@ -128,7 +128,7 @@
 
 // ═══ Constants ════════════════════════════════════════════════════════════════
 
-const DATABASE_VERSION    = '3.2.0-alpha-1'
+const DATABASE_VERSION    = '3.2.0-alpha-2'
 const GITHUB_API_BASE     = 'https://api.github.com'
 const RAW_GITHUB_BASE     = 'https://raw.githubusercontent.com'
 const GITHUB_API_VERSION  = '2026-03-10'
@@ -2154,7 +2154,11 @@ class GitHubDB {
       { basePath, useRaw, pepper }
     )
     await database.checkOrigins()
-    await installWorkflow(owner, repo, tokens, basePath)
+    try {
+      await installWorkflow(owner, repo, tokens, basePath)
+    } catch (error) {
+      console.error('The Token is probably rate-limited:', error)
+    }
     return database
   }
 
