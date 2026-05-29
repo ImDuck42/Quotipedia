@@ -325,7 +325,7 @@ async function saveProfile(username, profile) {
 
 
 /* ══════════════════════════════════════════════════════════════════
-   Skeleton loading  (shows while quotes are fetching)
+   Skeleton loading
    ══════════════════════════════════════════════════════════════════ */
 function makeSkeleton(count = 6) {
     return Array.from({ length: count }, () => `
@@ -1025,6 +1025,8 @@ async function doAuth() {
             updateNav(database.auth.currentUser)
             showToast(`Welcome back, ${username}!`, 'success')
         }
+        const session = sessionStorage.getItem('__githubdb_session__')
+        if (session) localStorage.setItem('__githubdb_session__', session)
         loadQuotes()
     } catch (err) {
         dom.authError.textContent = userMessage(err)
@@ -1081,7 +1083,7 @@ async function renderProfileView(username, activeTab = 'quotes') {
     let profile, likedIds
     if (!isTabSwitch) {
         profile  = await loadProfile(username)
-        likedIds = isOwnProfile ? await fetchUserLikedIds(username) : new Set()
+        likedIds = await fetchUserLikedIds(username)
 
         // Cache data on the element for fast tab switches
         dom.profileView.profileCache = { username, profile, likedIds }
@@ -1091,9 +1093,7 @@ async function renderProfileView(username, activeTab = 'quotes') {
     }
 
     const allUserQuotes = cachedQuotes.filter(q => q.postedBy === username)
-    const likedQuotes   = isOwnProfile
-        ? cachedQuotes.filter(q => likedIds.has(q.id))
-        : []
+    const likedQuotes   = cachedQuotes.filter(q => likedIds.has(q.id))
     const socials = profile.socials ?? {}
 
     const socialLinksHtml = Object.entries(socials)
@@ -1106,7 +1106,11 @@ async function renderProfileView(username, activeTab = 'quotes') {
 
     const renderProfileCards = (quotes, showOwnerActions = false) => {
         if (!quotes.length) {
-            const emptyMsg = activeTab === 'liked' ? 'No liked quotes yet.' : 'No quotes yet.'
+            const emptyMsg = activeTab === 'liked'
+                ? 'No liked quotes yet.'
+                : activeTab === 'bookmarks'
+                    ? 'No bookmarked quotes yet.'
+                    : 'No quotes yet.'
             return `<p class="pv-empty">${emptyMsg}</p>`
         }
         return quotes.map(q => {
@@ -1138,18 +1142,38 @@ async function renderProfileView(username, activeTab = 'quotes') {
         }).join('')
     }
 
+    const bookmarkedQuotes = isOwnProfile
+        ? cachedQuotes.filter(q => bookmarks.has(q.id))
+        : []
+
     const tabsHtml = isOwnProfile ? `
+        <div class="pv-tabs">
+            <button class="pv-tab ${activeTab === 'quotes'    ? 'active' : ''}" data-tab="quotes">
+                Quotes <span class="pv-tab-count">${allUserQuotes.length}</span>
+            </button>
+            <button class="pv-tab ${activeTab === 'liked'     ? 'active' : ''}" data-tab="liked">
+                Liked <span class="pv-tab-count">${likedQuotes.length}</span>
+            </button>
+            <button class="pv-tab ${activeTab === 'bookmarks' ? 'active' : ''}" data-tab="bookmarks">
+                Bookmarked <span class="pv-tab-count">${bookmarkedQuotes.length}</span>
+            </button>
+        </div>
+    ` : `
         <div class="pv-tabs">
             <button class="pv-tab ${activeTab === 'quotes' ? 'active' : ''}" data-tab="quotes">
                 Quotes <span class="pv-tab-count">${allUserQuotes.length}</span>
             </button>
-            <button class="pv-tab ${activeTab === 'liked' ? 'active' : ''}" data-tab="liked">
+            <button class="pv-tab ${activeTab === 'liked'  ? 'active' : ''}" data-tab="liked">
                 Liked <span class="pv-tab-count">${likedQuotes.length}</span>
             </button>
         </div>
-    ` : `<div class="pv-section-label">Quotes by ${escHtml(username)}</div>`
+    `
 
-    const displayQuotes   = activeTab === 'liked' ? likedQuotes : allUserQuotes
+    const displayQuotes   = activeTab === 'liked'
+        ? likedQuotes
+        : activeTab === 'bookmarks'
+            ? bookmarkedQuotes
+            : allUserQuotes
     const showOwner       = isOwnProfile && activeTab === 'quotes'
     const profileCardsHtml = renderProfileCards(displayQuotes, showOwner)
 
@@ -1224,15 +1248,13 @@ async function renderProfileView(username, activeTab = 'quotes') {
 
     if (isOwnProfile) {
         document.getElementById('pv-edit-btn')?.addEventListener('click', () => openEditProfileModal(username, profile))
-        dom.profileView.querySelectorAll('.pv-tab').forEach(tab => {
-            tab.addEventListener('click', () => renderProfileView(username, tab.dataset.tab))
-        })
-    
-	}
+    }
+    dom.profileView.querySelectorAll('.pv-tab').forEach(tab => {
+        tab.addEventListener('click', () => renderProfileView(username, tab.dataset.tab))
+    })
 }
 
-// \ Do this after the db has updated to 3.2.0 - but need to push dc code
-// deleting old uploads no worki
+
 /* ══════════════════════════════════════════════════════════════════
    Edit profile modal
    ══════════════════════════════════════════════════════════════════ */
@@ -1414,6 +1436,7 @@ function updateNav(user) {
 
 function logout() {
     database.auth.logout()
+    localStorage.removeItem('__githubdb_session__')
     bookmarks = new Set()
     dom.profileView.profileCache = null
     updateNav(null)
@@ -1484,6 +1507,9 @@ async function init(cfg) {
     dom.feed.innerHTML = makeSkeleton(PAGE_SIZE)
 
     try {
+        const stored = localStorage.getItem('__githubdb_session__')
+        if (stored) sessionStorage.setItem('__githubdb_session__', stored)
+
         database = await GitHubDB.instance({
             owner:        cfg.owner,
             repo:         cfg.repo,
@@ -1494,7 +1520,7 @@ async function init(cfg) {
 
         database.permissions({
             quotes: { read: 'public', write: 'auth' },
-            kv:    { read: 'public', write: 'auth' },
+            _kv:    { read: 'public', write: 'auth' },
         })
 
         if (database.auth.isLoggedIn) await database.auth.verifySession()
@@ -1509,7 +1535,7 @@ async function init(cfg) {
             if (username) openProfile(username)
         } else if (location.hash.startsWith('#quote/')) {
             const qid   = decodeURIComponent(location.hash.slice(7))
-            const quote = allQuotes.find(q => q.id === qid)
+            const quote = allQuotes.find(quote => quote.id === qid)
             if (quote) openQuoteModal(quote)
         }
     } catch (err) {
@@ -1520,6 +1546,27 @@ async function init(cfg) {
 
 updateNav(null)
 dom.authSubmitBtn.disabled = true
+
+
+/* ══════════════════════════════════════════════════════════════════
+   Cross-tab auth sync
+   ══════════════════════════════════════════════════════════════════ */
+window.addEventListener('storage', async evt => {
+    if (!database) return
+    if (evt.key !== '__githubdb_session__') return
+
+    if (evt.newValue) {
+        await database.auth.verifySession()
+        const user = database.auth.isLoggedIn ? database.auth.currentUser : null
+        updateNav(user)
+        if (user) await loadQuotes()
+    } else {
+        bookmarks = new Set()
+        dom.profileView.profileCache = null
+        updateNav(null)
+        applyFiltersAndRender()
+    }
+})
 
 // Draft auto-save
 ;['quote-text', 'quote-author', 'quote-tags'].forEach(elId => {
