@@ -1,0 +1,104 @@
+name: Notify Discord on New Quote
+
+on:
+  push:
+    paths:
+      - 'data/quotes/**.json'
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 2
+
+      - name: Detect new quote files
+        id: detect
+        run: |
+          NEW_FILES=$(git diff --name-only --diff-filter=A HEAD~1 HEAD -- 'data/quotes/*.json')
+          echo "files<<EOF" >> "$GITHUB_OUTPUT"
+          echo "$NEW_FILES" >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+
+      - name: Send Discord webhook for each new quote
+        if: steps.detect.outputs.files != ''
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          REPO_OWNER: ImDuck42
+          REPO_NAME: Quotipedia
+        run: |
+          echo "${{ steps.detect.outputs.files }}" | while IFS= read -r FILE; do
+            [ -z "$FILE" ] && continue
+
+            # ── Read quote JSON ──────────────────────────────────────────────
+            QUOTE_JSON=$(cat "$FILE")
+
+            QUOTE_ID=$(echo "$QUOTE_JSON"     | jq -r '.id')
+            QUOTE_TEXT=$(echo "$QUOTE_JSON"   | jq -r '.text')
+            QUOTE_AUTHOR=$(echo "$QUOTE_JSON" | jq -r '.author // empty')
+            POSTED_BY=$(echo "$QUOTE_JSON"    | jq -r '.postedBy')
+            CREATED_AT=$(echo "$QUOTE_JSON"   | jq -r '.createdAt')
+            TAGS=$(echo "$QUOTE_JSON"         | jq -r '[.tags[]? | "#" + .] | join(" | ")')
+
+            # ── Resolve KV profile ───────────────────────────────────────────
+            PROFILE_KEY="profile-$(echo "$POSTED_BY" | tr '[:upper:]' '[:lower:]')"
+            PROFILE_FILE="data/_kv/${PROFILE_KEY}.json"
+            AVATAR_URL=""
+
+            if [ -f "$PROFILE_FILE" ]; then
+              AVATAR_URL=$(jq -r '.value.avatar // empty' "$PROFILE_FILE")
+            fi
+
+            # ── Build quote URL ──────────────────────────────────────────────
+            QUOTE_URL="https://${REPO_OWNER}.github.io/${REPO_NAME}#quote/${QUOTE_ID}"
+
+            # ── Assemble embed (mirrors sendQuoteWebhook exactly) ───────────
+            EMBED=$(jq -n \
+              --arg color     "13215829" \
+              --arg title     "$QUOTE_TEXT" \
+              --arg url       "$QUOTE_URL" \
+              --arg desc      "$QUOTE_AUTHOR" \
+              --arg authorName "$POSTED_BY" \
+              --arg iconUrl   "$AVATAR_URL" \
+              --arg footer    "$TAGS" \
+              --arg timestamp "$CREATED_AT" \
+              '{
+                color: ($color | tonumber),
+                title: $title,
+                url:   $url,
+                description: (if $desc   != "" then ("– " + $desc)  else null end),
+                author: {
+                  name:     $authorName,
+                  icon_url: (if $iconUrl != "" then $iconUrl else null end)
+                },
+                footer: {
+                  text: (if $footer != "" then $footer else null end)
+                },
+                timestamp: $timestamp
+              }
+              | with_entries(select(.value != null))'
+            )
+
+            PAYLOAD=$(jq -n \
+              --arg content "<@&1509578523843625070>" \
+              --argjson embed "$EMBED" \
+              '{ content: $content, embeds: [$embed] }'
+            )
+
+            # ── POST to Discord ──────────────────────────────────────────────
+            HTTP_STATUS=$(curl -s -o /tmp/discord-response.txt -w "%{http_code}" \
+              -X POST "$DISCORD_WEBHOOK_URL" \
+              -H "Content-Type: application/json" \
+              -d "$PAYLOAD"
+            )
+
+            if [ "$HTTP_STATUS" -ge 200 ] && [ "$HTTP_STATUS" -lt 300 ]; then
+              echo "✓ Webhook sent for quote $QUOTE_ID (HTTP $HTTP_STATUS)"
+            else
+              echo "✗ Webhook failed for quote $QUOTE_ID (HTTP $HTTP_STATUS)"
+              cat /tmp/discord-response.txt
+              exit 1
+            fi
+          done
