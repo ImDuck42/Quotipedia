@@ -11,7 +11,6 @@ const DEFAULT_CONFIG = {
     tokens:      [
         'ghdb_enc_ICEwKjIqGzImPBtzdgoFcBQOcAN3GSsXARAhKg8PFDEGFz0Adw4nKj0xBzJ/PykXETAqICgFLxoKHTUnPhwqKn97AxYXLBcPNTgwCxAfDnR0HwkaFyYgLhIkIg8T',
     ],
-    urlCheck:   atob(atob('YUhSMGNITTZMeTlrYVhOamIzSmtMbU52YlM5aGNHa3ZkMlZpYUc5dmEzTXZNVFV3T1RVMk56UTBPRFUxTnpReU1EWXlOUzl2Wms5VmNHdDVjVVIxUlZCU2VrOXZjak5yUlhsVlJFWllPRE0zU0RoVVRtcHdaR2hNUzNkd1ZGOXFTMEpSVFMwMGNtNU5jMVpUWm1jNVkyaEVlRU5TZEU1TGFRPT0=')),
 }
 
 const PAGE_SIZE = 12
@@ -798,7 +797,7 @@ document.getElementById('submit-quote-btn').addEventListener('click', async () =
     dom.submitMsg.textContent = 'Publishing…'
 
     try {
-        const createdQuote = await database.collection('quotes').add({
+        await database.collection('quotes').add({
             text,
             author:   author || null,
             tags:     tags.length ? tags : [],
@@ -811,10 +810,6 @@ document.getElementById('submit-quote-btn').addEventListener('click', async () =
         clearDraft()
         dom.submitMsg.textContent = ''
         showToast('Quote published!', 'success')
-
-        if (createdQuote) {
-            sendQuoteWebhook(createdQuote)
-        }
 
         await loadQuotes()
     } catch (err) {
@@ -913,59 +908,6 @@ async function deleteQuote(qid) {
         }
     } catch (err) {
         toastError(err)
-    }
-}
-
-async function sendQuoteWebhook(quote) {
-    const cfg = getConfig()
-    if (!cfg.urlCheck) return
-
-    console.log(cfg.urlCheck, 'Dispatching quote webhook for quote ID:', quote.id)
-
-    let pfpUrl = ''
-    try {
-        const profile = await loadProfile(quote.postedBy)
-        pfpUrl = profile?.avatar || ''
-    } catch (err) {
-        console.warn('Failed to retrieve poster profile for webhook:', err)
-    }
-
-    const quoteUrl = quote.id ? `https://${cfg.owner}.github.io/${cfg.repo}#quote/${quote.id}` : undefined
-
-    const tagsLine = (quote.tags && quote.tags.length)
-        ? quote.tags.map(tag => (tag.startsWith('#') ? tag : `#${tag}`)).join(' | ') : ''
-
-    const content = '<@&1509578523843625070>'
-    const embed = {
-        color: 13215829,
-        title: quote.text,
-        url: quoteUrl || undefined,
-        description: quote.author ? `– ${quote.author}` : undefined,
-        author: {
-            name: quote.postedBy,
-            icon_url: pfpUrl || undefined
-        },
-        footer: {
-            text: tagsLine || undefined
-        },
-        timestamp: new Date().toISOString()
-    }
-
-    const payload = { content: content, embeds: [embed] }
-
-    try {
-        const response = await fetch(cfg.urlCheck, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload)
-        })
-
-        if (!response.ok) {
-            const errorText = await response.text()
-            console.warn(`Discord Webhook failed with status ${response.status}:`, errorText)
-        }
-    } catch (err) {
-        console.warn('Failed to dispatch quote webhook due to network error:', err)
     }
 }
 

@@ -20,7 +20,7 @@ jobs:
           NEW_FILES=$(git diff --name-only --diff-filter=A HEAD~1 HEAD -- 'data/quotes/*.json')
           echo "files<<EOF" >> "$GITHUB_OUTPUT"
           echo "$NEW_FILES" >> "$GITHUB_OUTPUT"
-          echo "EOF" >> "$GITHUB_OUTPUT"
+          echo "EOF"        >> "$GITHUB_OUTPUT"
 
       - name: Send Discord webhook for each new quote
         if: steps.detect.outputs.files != ''
@@ -56,19 +56,19 @@ jobs:
 
             # ── Assemble embed (mirrors sendQuoteWebhook exactly) ───────────
             EMBED=$(jq -n \
-              --arg color     "13215829" \
-              --arg title     "$QUOTE_TEXT" \
-              --arg url       "$QUOTE_URL" \
-              --arg desc      "$QUOTE_AUTHOR" \
+              --arg color      "13215829" \
+              --arg title      "$QUOTE_TEXT" \
+              --arg url        "$QUOTE_URL" \
+              --arg desc       "$QUOTE_AUTHOR" \
               --arg authorName "$POSTED_BY" \
-              --arg iconUrl   "$AVATAR_URL" \
-              --arg footer    "$TAGS" \
-              --arg timestamp "$CREATED_AT" \
+              --arg iconUrl    "$AVATAR_URL" \
+              --arg footer     "$TAGS" \
+              --arg timestamp  "$CREATED_AT" \
               '{
                 color: ($color | tonumber),
                 title: $title,
                 url:   $url,
-                description: (if $desc   != "" then ("– " + $desc)  else null end),
+                description: (if $desc   != "" then ("– " + $desc) else null end),
                 author: {
                   name:     $authorName,
                   icon_url: (if $iconUrl != "" then $iconUrl else null end)
@@ -82,8 +82,8 @@ jobs:
             )
 
             PAYLOAD=$(jq -n \
-              --arg content "<@&1509578523843625070>" \
-              --argjson embed "$EMBED" \
+              --arg     content "<@&1509578523843625070>" \
+              --argjson embed   "$EMBED" \
               '{ content: $content, embeds: [$embed] }'
             )
 
