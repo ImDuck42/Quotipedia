@@ -306,13 +306,7 @@ function updateBookmarkButton(quoteId) {
 /* Profile KV */
 async function loadProfile(username) {
     try {
-        const kvData = (await database.kv.get(kvKey.profile(username))) ?? {}
-        try {
-            const mod = await import(`./profiles/${username}.js`)
-            return { ...kvData, ...mod.default }
-        } catch {
-        }
-        return kvData
+        return (await database.kv.get(kvKey.profile(username))) ?? {}
     } catch {
         return {}
     }
